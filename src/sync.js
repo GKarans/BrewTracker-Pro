@@ -40,9 +40,9 @@ export async function fetchRemoteState(localState, breweryId) {
       createdBy: batch.created_by,
       createdAt: batch.created_at,
       finishedAt: batch.finished_at,
-      measurements: measurements.data.filter((item) => item.batch_id === batch.id).map((item) => ({ id: item.id, measuredAt: item.measured_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), note: item.note || "", operatorId: item.operator_id })),
+      measurements: measurements.data.filter((item) => item.batch_id === batch.id).map((item) => { const linkedAction = actions.data.find((action) => action.id === item.process_action_id); return { id: item.id, measuredAt: item.measured_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), note: item.note || "", operatorId: item.operator_id, processActionId: item.process_action_id, actionType: linkedAction?.action_type || null }; }),
       actions: actions.data.filter((item) => item.batch_id === batch.id).map((item) => ({ id: item.id, type: item.action_type, performedAt: item.performed_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), note: item.note || "", operatorId: item.operator_id })),
-      packagingRuns: packagingRuns.data.filter((item) => item.batch_id === batch.id).map((item) => ({ id: item.id, clientId: item.client_id, runNumber: item.run_number, volumeTons: Number(item.volume_tons), status: item.status, filteredAt: item.filtered_at, packagedAt: item.packaged_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), co2Vol: item.co2_vol == null ? null : Number(item.co2_vol), operatorId: item.operator_id })),
+      packagingRuns: packagingRuns.data.filter((item) => item.batch_id === batch.id).map((item) => ({ id: item.id, clientId: item.client_id, runNumber: item.run_number, volumeTons: Number(item.volume_tons), centrifugeLiters: item.centrifuge_liters == null ? null : Number(item.centrifuge_liters), status: item.status, filteredAt: item.filtered_at, packagedAt: item.packaged_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), co2Vol: item.co2_vol == null ? null : Number(item.co2_vol), operatorId: item.operator_id })),
     })),
     pendingSync: [],
     breweryId,
@@ -65,13 +65,13 @@ export async function syncEvent(state, event, breweryId) {
   if (!batch) return true;
   if (event.entity === "measurement") {
     const item = batch.measurements.find((child) => child.id === event.entityId);
-    throwOnError(await supabase.from("measurements").upsert({ id: item.id, client_id: item.id, batch_id: batch.id, operator_id: item.operatorId, measured_at: item.measuredAt, gravity: item.gravity, ph: item.ph, temperature_c: item.temperature, pressure_bar: item.pressure, note: item.note || null }));
+    throwOnError(await supabase.from("measurements").upsert({ id: item.id, client_id: item.id, batch_id: batch.id, operator_id: item.operatorId, measured_at: item.measuredAt, gravity: item.gravity, ph: item.ph, temperature_c: item.temperature, pressure_bar: item.pressure, note: item.note || null, process_action_id: item.processActionId || null }));
   } else if (event.entity === "action") {
     const item = batch.actions.find((child) => child.id === event.entityId);
     throwOnError(await supabase.from("process_actions").upsert({ id: item.id, client_id: item.id, batch_id: batch.id, operator_id: item.operatorId, action_type: item.type, performed_at: item.performedAt, gravity: item.gravity, ph: item.ph, temperature_c: item.temperature, pressure_bar: item.pressure, note: item.note || null }, { onConflict: "batch_id,action_type" }));
   } else if (event.entity === "packagingRun") {
     const item = batch.packagingRuns.find((child) => child.id === event.entityId);
-    throwOnError(await supabase.from("packaging_runs").upsert({ id: item.id, client_id: item.clientId || item.id, batch_id: batch.id, run_number: item.runNumber, volume_tons: item.volumeTons, status: item.status, filtered_at: item.filteredAt, packaged_at: item.packagedAt, gravity: item.gravity, ph: item.ph, temperature_c: item.temperature, pressure_bar: item.pressure, co2_vol: item.co2Vol, operator_id: item.operatorId }, { onConflict: "id" }));
+    throwOnError(await supabase.from("packaging_runs").upsert({ id: item.id, client_id: item.clientId || item.id, batch_id: batch.id, run_number: item.runNumber, volume_tons: item.volumeTons, centrifuge_liters: item.centrifugeLiters, status: item.status, filtered_at: item.filteredAt, packaged_at: item.packagedAt, gravity: item.gravity, ph: item.ph, temperature_c: item.temperature, pressure_bar: item.pressure, co2_vol: item.co2Vol, operator_id: item.operatorId }, { onConflict: "id" }));
     if (batch.status === "finished") throwOnError(await supabase.from("batches").update({ status: "finished", finished_at: batch.finishedAt }).eq("id", batch.id));
   }
   return true;

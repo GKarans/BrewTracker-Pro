@@ -1,6 +1,6 @@
 import "./styles.css";
 import { icons, createElement } from "lucide";
-import { ACTION_LABELS, ACTION_TYPES, BATCH_STATUS, FERMENTERS, addDays, calculateHistoryStats, completedPackagingVolume, formatBatchNumber, getFermenter, getRecommendedAction, requiredPackagingRuns, validateGravity, validatePh, validatePressure, validateTemperature } from "./domain.js";
+import { ACTION_LABELS, ACTION_TYPES, BATCH_STATUS, FERMENTERS, addDays, calculateHistoryStats, completedPackagingVolume, formatBatchNumber, getFermenter, getRecommendedAction, remainingInFermenter, requiredPackagingRuns, validateGravity, validatePh, validatePressure, validateTemperature } from "./domain.js";
 import { loadState, saveState } from "./store.js";
 import { isSupabaseConfigured, supabase } from "./supabase.js";
 import { fetchRemoteState, syncEvent } from "./sync.js";
@@ -145,6 +145,11 @@ function activeBatches() { return state.batches.filter((batch) => batch.status !
 function activePackagingRun() { return state.batches.flatMap((batch) => (batch.packagingRuns || []).map((run) => ({ ...run, batch }))).find((item) => item.status === "filtered"); }
 function currentOperator() { return state.operators.find((operator) => operator.id === state.activeOperatorId) || state.operators[0]; }
 function today() { return new Date().toISOString().slice(0, 10); }
+function localDateTimeValue(value = new Date()) {
+  const date = new Date(value);
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 16);
+}
 function formatDate(value) { return new Intl.DateTimeFormat("lv-LV", { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(`${value.slice(0, 10)}T00:00:00`)); }
 
 function shell(content, title = "BrewTracker") {
@@ -170,7 +175,8 @@ function tankCard(number) {
   const beer = state.beerTypes.find((item) => item.id === batch.beerTypeId);
   const latest = batch.measurements.at(-1);
   const recommendation = getRecommendedAction(batch);
-  return `<article class="tank-card occupied" data-open-batch="${batch.id}"><div class="tank-number">${number}</div><div class="tank-main"><div class="card-top"><span class="batch-no">#${batch.batchNumber}</span><span class="days">${Math.max(0, Math.floor((Date.now() - new Date(batch.brewDate)) / 86400000))}. diena</span></div><h2>${beer?.name || "Nezināms alus"} <small>${batch.volumeTons} t</small></h2><p>${latest ? `Blīvums ${latest.gravity} · pH ${latest.ph} · ${latest.temperature} °C` : "Vēl nav mērījumu"}</p><div class="recommendation ${recommendation.tone}">${icon(recommendation.tone === "urgent" ? "TriangleAlert" : "CircleCheck", 18)} ${recommendation.label}</div></div>${icon("ChevronRight")}</article>`;
+  const remaining = remainingInFermenter(batch);
+  return `<article class="tank-card occupied" data-open-batch="${batch.id}"><div class="tank-number">${number}</div><div class="tank-main"><div class="card-top"><span class="batch-no">#${batch.batchNumber}</span><span class="days">${Math.max(0, Math.floor((Date.now() - new Date(batch.brewDate)) / 86400000))}. diena</span></div><h2>${beer?.name || "Nezināms alus"} <small>${remaining} t${remaining !== Number(batch.volumeTons) ? ` palikušas no ${batch.volumeTons} t` : ""}</small></h2><p>${latest ? `Blīvums ${latest.gravity} · pH ${latest.ph} · ${latest.temperature} °C` : "Vēl nav mērījumu"}</p><div class="recommendation ${recommendation.tone}">${icon(recommendation.tone === "urgent" ? "TriangleAlert" : "CircleCheck", 18)} ${recommendation.label}</div></div>${icon("ChevronRight")}</article>`;
 }
 
 function newBatchForm(tank = "") {
@@ -218,7 +224,7 @@ function batchDetail() {
   const beer = state.beerTypes.find((item) => item.id === batch.beerTypeId);
   const recommendation = getRecommendedAction(batch);
   const stats = calculateHistoryStats(state.batches, batch.beerTypeId);
-  shell(`<main class="narrow"><button class="text-button" data-route="dashboard">${icon("ArrowLeft")} Visas tvertnes</button><section class="batch-hero"><div><span class="batch-no">#${batch.batchNumber} · Tvertne ${batch.fermenterNumber}</span><h1>${beer.name} <small>${batch.volumeTons} t</small></h1><p>Sākts ${formatDate(batch.brewDate)}</p></div><span class="status">${batch.status === BATCH_STATUS.FINISHED ? "Pabeigts" : "Aktīvs"}</span></section><section class="action-banner ${recommendation.tone}"><div>${icon("Sparkles", 24)}<span><small>Ieteicamā darbība</small><strong>${recommendation.label}</strong></span></div></section>${predictionPanel(batch, stats)}<section class="detail-grid"><article class="panel"><div class="panel-title"><h2>Jauns mērījums</h2><span>Var saglabāt bez interneta</span></div><form id="measurement-form" class="measurement-form"><div class="field"><label>Blīvums</label><input name="gravity" inputmode="numeric" placeholder="1054" required></div><div class="field"><label>pH</label><input name="ph" type="number" min="0" max="14" step="0.01" placeholder="4.20" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" min="-5" max="50" step="0.1" placeholder="19.5" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" min="0" max="5" step="0.01" placeholder="0.80"></div><div class="field full"><label>Piezīme</label><input name="note" placeholder="Neobligāta piezīme"></div><div class="form-error full" id="measurement-error"></div><button class="primary full">${icon("Save")} Saglabāt mērījumu</button></form></article><article class="panel"><div class="panel-title"><h2>Fermentācijas darbības</h2></div><div class="action-list">${[ACTION_TYPES.SPUND, ...(batch.hasDryHop ? [ACTION_TYPES.DRY_HOP] : []), ACTION_TYPES.COOL].map((type) => actionButton(batch, type)).join("")}</div></article></section>${packagingPanel(batch)}<section class="panel"><div class="panel-title"><h2>Mērījumu vēsture</h2><span>${batch.measurements.length} ieraksti</span></div>${measurementTable(batch)}</section></main>`, beer.name);
+  shell(`<main class="narrow"><button class="text-button" data-route="dashboard">${icon("ArrowLeft")} Visas tvertnes</button><section class="batch-hero"><div><span class="batch-no">#${batch.batchNumber} · Tvertne ${batch.fermenterNumber}</span><h1>${beer.name} <small>${remainingInFermenter(batch)} t tvertnē no ${batch.volumeTons} t</small></h1><p>Sākts ${formatDate(batch.brewDate)}</p></div><span class="status">${batch.status === BATCH_STATUS.FINISHED ? "Pabeigts" : "Aktīvs"}</span></section><section class="action-banner ${recommendation.tone}"><div>${icon("Sparkles", 24)}<span><small>Ieteicamā darbība</small><strong>${recommendation.label}</strong></span></div></section>${predictionPanel(batch, stats)}<section class="detail-grid"><article class="panel"><div class="panel-title"><h2>Jauns mērījums</h2><span>Var saglabāt bez interneta</span></div><form id="measurement-form" class="measurement-form"><div class="field full"><label>Mērījuma datums un laiks</label><input name="measuredAt" type="datetime-local" value="${localDateTimeValue()}" required></div><div class="field"><label>Blīvums</label><input name="gravity" inputmode="numeric" placeholder="1054" required></div><div class="field"><label>pH</label><input name="ph" type="number" min="0" max="14" step="0.01" placeholder="4.20" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" min="-5" max="50" step="0.1" placeholder="19.5" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" min="0" max="5" step="0.01" placeholder="0.80"></div><div class="field full"><label>Saistītā fermentācijas darbība</label><select name="actionType"><option value="">Nav — tikai mērījums</option><option value="spund">Aizgriezts vārsts</option>${batch.hasDryHop ? `<option value="dry_hop">Pievienots Dry Hop</option>` : ""}<option value="cool">Iestatīta dzesēšana uz 0 °C</option></select></div><div class="field full"><label>Piezīme</label><input name="note" placeholder="Neobligāta piezīme"></div><div class="form-error full" id="measurement-error"></div><button class="primary full">${icon("Save")} Saglabāt mērījumu</button></form></article><article class="panel"><div class="panel-title"><h2>Fermentācijas darbības</h2></div><div class="action-list">${[ACTION_TYPES.SPUND, ...(batch.hasDryHop ? [ACTION_TYPES.DRY_HOP] : []), ACTION_TYPES.COOL].map((type) => actionButton(batch, type)).join("")}</div></article></section>${packagingPanel(batch)}<section class="panel"><div class="panel-title"><h2>Mērījumu vēsture</h2><span>${batch.measurements.length} ieraksti</span></div>${measurementTable(batch)}</section></main>`, beer.name);
 }
 
 function packagingPanel(batch) {
@@ -228,7 +234,7 @@ function packagingPanel(batch) {
   const coolingDone = batch.actions.some((action) => action.type === ACTION_TYPES.COOL);
   const briteBusy = activePackagingRun();
   const canFilter = coolingDone && runs.length < required && !briteBusy && batch.status !== BATCH_STATUS.FINISHED;
-  return `<section class="panel packaging-panel"><div class="panel-title"><div><h2>Filtrēšana un pildīšana</h2><p>${packaged} no ${batch.volumeTons} t sapildītas · ${runs.length} no ${required} cikliem</p></div>${canFilter ? `<button class="primary" data-filter-to-brite>${icon("ArrowRightLeft")} Filtrēt uz Dzidru</button>` : ""}</div><div class="packaging-runs">${runs.length ? runs.map((run) => `<article class="packaging-run ${run.status}"><div><span>Cikls ${run.runNumber}</span><strong>${run.volumeTons} t · ${run.status === "filtered" ? "Dzidrā" : "Sapildīts"}</strong><small>${formatDate(run.filteredAt)}${run.packagedAt ? ` → ${formatDate(run.packagedAt)}` : ""}</small></div>${run.status === "filtered" ? `<button class="primary" data-finish-packaging="${run.id}">${icon("PackageCheck")} Sapildīts</button>` : icon("CircleCheckBig", 28)}</article>`).join("") : `<div class="empty-state compact"><p>${coolingDone ? (briteBusy ? "Dzidra pašlaik ir aizņemta ar citu partiju." : "Alus gatavs filtrēšanai uz Dzidru.") : "Pirms filtrēšanas pabeidz dzesēšanu uz 0 °C."}</p></div>`}</div></section>`;
+  return `<section class="panel packaging-panel"><div class="panel-title"><div><h2>Filtrēšana un pildīšana</h2><p>${packaged} no ${batch.volumeTons} t sapildītas · tvertnē palikušas ${remainingInFermenter(batch)} t</p></div>${canFilter ? `<button class="primary" data-filter-to-brite>${icon("ArrowRightLeft")} Filtrēt uz Dzidru</button>` : ""}</div><div class="packaging-runs">${runs.length ? runs.map((run) => `<article class="packaging-run ${run.status}"><div><span>Cikls ${run.runNumber} no ${required}</span><strong>${run.volumeTons} t · ${run.status === "filtered" ? "Dzidrā" : "Sapildīts"}</strong><small>${formatDate(run.filteredAt)}${run.packagedAt ? ` → ${formatDate(run.packagedAt)}` : ""}${run.centrifugeLiters != null ? ` · centrifūga ${run.centrifugeLiters} l` : ""}</small></div>${run.status === "filtered" ? `<button class="primary" data-finish-packaging="${run.id}">${icon("PackageCheck")} Sapildīts</button>` : icon("CircleCheckBig", 28)}</article>`).join("") : `<div class="empty-state compact"><p>${coolingDone ? (briteBusy ? "Dzidra pašlaik ir aizņemta ar citu partiju." : "Alus gatavs filtrēšanai uz Dzidru.") : "Pirms filtrēšanas pabeidz dzesēšanu uz 0 °C."}</p></div>`}</div></section>`;
 }
 
 function predictionPanel(batch, stats) {
@@ -243,14 +249,26 @@ function actionButton(batch, type) {
 
 function measurementTable(batch) {
   if (!batch.measurements.length) return `<div class="empty-state">${icon("Gauge", 34)}<p>Vēl nav neviena mērījuma.</p></div>`;
-  return `<div class="table-wrap"><table><thead><tr><th>Laiks</th><th>Blīvums</th><th>pH</th><th>°C</th><th>bar</th><th>Operators</th></tr></thead><tbody>${[...batch.measurements].reverse().map((item) => `<tr><td>${new Date(item.measuredAt).toLocaleString("lv-LV", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</td><td><strong>${item.gravity}</strong></td><td>${item.ph}</td><td>${item.temperature}</td><td>${item.pressure ?? "—"}</td><td>${state.operators.find((op) => op.id === item.operatorId)?.name || "—"}</td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Laiks</th><th>Darbība</th><th>Blīvums</th><th>pH</th><th>°C</th><th>bar</th><th>Operators</th></tr></thead><tbody>${[...batch.measurements].reverse().map((item) => `<tr><td>${new Date(item.measuredAt).toLocaleString("lv-LV", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</td><td>${item.actionType ? `<span class="action-tag">${ACTION_LABELS[item.actionType]}</span>` : "—"}</td><td><strong>${item.gravity}</strong></td><td>${item.ph}</td><td>${item.temperature}</td><td>${item.pressure ?? "—"}</td><td>${state.operators.find((op) => op.id === item.operatorId)?.name || "—"}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
 async function submitMeasurement(form) {
   try {
     const data = Object.fromEntries(new FormData(form));
     const batch = state.batches.find((item) => item.id === selectedBatchId);
-    const measurement = { id: crypto.randomUUID(), measuredAt: new Date().toISOString(), gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), note: data.note.trim(), operatorId: currentOperator().id };
+    const measuredAt = new Date(data.measuredAt).toISOString();
+    let processActionId = null;
+    if (data.actionType) {
+      const action = { id: crypto.randomUUID(), type: data.actionType, performedAt: measuredAt, gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), note: data.note.trim(), operatorId: currentOperator().id };
+      batch.actions = batch.actions.filter((item) => item.type !== data.actionType);
+      batch.actions.push(action);
+      if (data.actionType === ACTION_TYPES.DRY_HOP) batch.status = BATCH_STATUS.DRY_HOP;
+      if (data.actionType === ACTION_TYPES.COOL) batch.status = BATCH_STATUS.COOLING;
+      processActionId = action.id;
+      await saveAndSync({ entity: "action", operation: "create", entityId: action.id });
+      await saveAndSync({ entity: "batch", operation: "update", entityId: batch.id });
+    }
+    const measurement = { id: crypto.randomUUID(), measuredAt, gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), note: data.note.trim(), operatorId: currentOperator().id, processActionId, actionType: data.actionType || null };
     batch.measurements.push(measurement);
     await saveAndSync({ entity: "measurement", operation: "create", entityId: measurement.id });
     render();
@@ -261,7 +279,7 @@ function actionDialog(type) {
   const batch = state.batches.find((item) => item.id === selectedBatchId);
   const latest = batch.measurements.at(-1);
   const dialog = document.createElement("dialog");
-  dialog.innerHTML = `<form method="dialog" id="action-form" class="dialog-card"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow">Procesa darbība</p><h2>${ACTION_LABELS[type]}</h2><p>Fiksē mērījumus darbības izpildes brīdī.</p><div class="measurement-form"><div class="field"><label>Blīvums</label><input name="gravity" value="${latest?.gravity ?? ""}" required></div><div class="field"><label>pH</label><input name="ph" type="number" step="0.01" value="${latest?.ph ?? ""}" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" step="0.1" value="${latest?.temperature ?? ""}" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" step="0.01" value="${latest?.pressure ?? ""}"></div><div class="form-error full" id="action-error"></div><button class="primary full" value="default">Apstiprināt darbību</button></div></form>`;
+  dialog.innerHTML = `<form method="dialog" id="action-form" class="dialog-card"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow">Procesa darbība</p><h2>${ACTION_LABELS[type]}</h2><p>Fiksē mērījumus darbības izpildes brīdī.</p><div class="measurement-form"><div class="field full"><label>Darbības datums un laiks</label><input name="performedAt" type="datetime-local" value="${localDateTimeValue()}" required></div><div class="field"><label>Blīvums</label><input name="gravity" value="${latest?.gravity ?? ""}" required></div><div class="field"><label>pH</label><input name="ph" type="number" step="0.01" value="${latest?.ph ?? ""}" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" step="0.1" value="${latest?.temperature ?? ""}" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" step="0.01" value="${latest?.pressure ?? ""}"></div><div class="form-error full" id="action-error"></div><button class="primary full" value="default">Apstiprināt darbību</button></div></form>`;
   document.body.append(dialog); dialog.showModal();
   dialog.addEventListener("close", async () => { if (dialog.returnValue === "default") await completeAction(type, dialog.querySelector("form")); dialog.remove(); });
 }
@@ -269,10 +287,10 @@ function actionDialog(type) {
 function filterToBriteDialog() {
   const batch = state.batches.find((item) => item.id === selectedBatchId);
   const latest = batch.measurements.at(-1);
-  const remaining = Number(batch.volumeTons) - completedPackagingVolume(batch);
+  const remaining = remainingInFermenter(batch);
   const volume = Math.min(4, remaining);
   const dialog = document.createElement("dialog");
-  dialog.innerHTML = `<form method="dialog" id="filter-form" class="dialog-card"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow">Dzidra · Brite Tank</p><h2>Filtrēt uz Dzidru</h2><p>Fermentācijas tvertne paliks aizņemta, līdz šis alus būs sapildīts pilnā apjomā.</p><div class="measurement-form"><div class="field"><label>Filtrējamais apjoms, t</label><input name="volumeTons" type="number" min="0.1" max="4" step="0.1" value="${volume}" required></div><div class="field"><label>Blīvums</label><input name="gravity" value="${latest?.gravity ?? ""}" required></div><div class="field"><label>pH</label><input name="ph" type="number" step="0.01" value="${latest?.ph ?? ""}" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" step="0.1" value="${latest?.temperature ?? ""}" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" step="0.01" value="${latest?.pressure ?? ""}"></div><div class="form-error full" id="filter-error"></div><button class="primary full" value="default">Apstiprināt filtrēšanu</button></div></form>`;
+  dialog.innerHTML = `<form method="dialog" id="filter-form" class="dialog-card"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow">Dzidra · Brite Tank</p><h2>Filtrēt uz Dzidru</h2><p>Fermentācijas tvertne paliks aizņemta, līdz šis alus būs sapildīts pilnā apjomā.</p><div class="measurement-form"><div class="field full"><label>Filtrēšanas datums un laiks</label><input name="filteredAt" type="datetime-local" value="${localDateTimeValue()}" required></div><div class="field"><label>No tvertnes paņemtais apjoms, t</label><input name="volumeTons" type="number" min="0.1" max="4" step="0.1" value="${volume}" required></div><div class="field"><label>Centrifūgas rādījums, litri</label><input name="centrifugeLiters" type="number" min="0" step="1" placeholder="Neobligāts"></div><div class="field"><label>Blīvums</label><input name="gravity" value="${latest?.gravity ?? ""}" required></div><div class="field"><label>pH</label><input name="ph" type="number" step="0.01" value="${latest?.ph ?? ""}" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" step="0.1" value="${latest?.temperature ?? ""}" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" step="0.01" value="${latest?.pressure ?? ""}"></div><div class="form-error full" id="filter-error"></div><button class="primary full" value="default">Apstiprināt filtrēšanu</button></div></form>`;
   document.body.append(dialog); dialog.showModal();
   dialog.addEventListener("close", async () => { if (dialog.returnValue === "default") await createPackagingRun(dialog.querySelector("form")); dialog.remove(); });
 }
@@ -282,10 +300,10 @@ async function createPackagingRun(form) {
     const data = Object.fromEntries(new FormData(form));
     const batch = state.batches.find((item) => item.id === selectedBatchId);
     if (activePackagingRun()) throw new Error("Dzidra pašlaik ir aizņemta.");
-    const remaining = Number(batch.volumeTons) - completedPackagingVolume(batch);
+    const remaining = remainingInFermenter(batch);
     const volumeTons = Number(data.volumeTons);
     if (volumeTons <= 0 || volumeTons > 4 || volumeTons > remaining) throw new Error(`Atļauts filtrēt ne vairāk kā ${Math.min(4, remaining)} t.`);
-    const run = { id: crypto.randomUUID(), clientId: crypto.randomUUID(), runNumber: (batch.packagingRuns || []).length + 1, volumeTons, status: "filtered", filteredAt: new Date().toISOString(), packagedAt: null, gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), co2Vol: null, operatorId: currentOperator().id };
+    const run = { id: crypto.randomUUID(), clientId: crypto.randomUUID(), runNumber: (batch.packagingRuns || []).length + 1, volumeTons, centrifugeLiters: data.centrifugeLiters === "" ? null : Number(data.centrifugeLiters), status: "filtered", filteredAt: new Date(data.filteredAt).toISOString(), packagedAt: null, gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), co2Vol: null, operatorId: currentOperator().id };
     batch.packagingRuns ||= []; batch.packagingRuns.push(run);
     await saveAndSync({ entity: "packagingRun", operation: "create", entityId: run.id }); render();
   } catch (error) { alert(error.message); }
@@ -295,7 +313,7 @@ function finishPackagingDialog(runId) {
   const batch = state.batches.find((item) => item.id === selectedBatchId);
   const run = batch.packagingRuns.find((item) => item.id === runId);
   const dialog = document.createElement("dialog");
-  dialog.innerHTML = `<form method="dialog" class="dialog-card"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow">Pildīšana · cikls ${run.runNumber}</p><h2>Apstiprināt pildīšanu</h2><p>Pēc apstiprināšanas Dzidra būs brīva nākamajam filtrēšanas ciklam.</p><div class="measurement-form"><div class="field"><label>Gala blīvums</label><input name="gravity" value="${run.gravity}" required></div><div class="field"><label>pH</label><input name="ph" type="number" step="0.01" value="${run.ph}" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" step="0.1" value="${run.temperature}" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" step="0.01" value="${run.pressure ?? ""}"></div><div class="field full"><label>CO₂, vol</label><input name="co2Vol" type="number" min="0" max="5" step="0.1" value="${batch.co2Target}" required></div><button class="primary full" value="default">Sapildīts</button></div></form>`;
+  dialog.innerHTML = `<form method="dialog" class="dialog-card"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow">Pildīšana · cikls ${run.runNumber}</p><h2>Apstiprināt pildīšanu</h2><p>Pēc apstiprināšanas Dzidra būs brīva nākamajam filtrēšanas ciklam.</p><div class="measurement-form"><div class="field full"><label>Pildīšanas datums un laiks</label><input name="packagedAt" type="datetime-local" value="${localDateTimeValue()}" required></div><div class="field"><label>Gala blīvums</label><input name="gravity" value="${run.gravity}" required></div><div class="field"><label>pH</label><input name="ph" type="number" step="0.01" value="${run.ph}" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" step="0.1" value="${run.temperature}" required></div><div class="field"><label>CO₂, vol</label><input name="co2Vol" type="number" min="0" max="5" step="0.1" value="${batch.co2Target}" required></div><button class="primary full" value="default">Sapildīts</button></div></form>`;
   document.body.append(dialog); dialog.showModal();
   dialog.addEventListener("close", async () => { if (dialog.returnValue === "default") await finishPackagingRun(runId, dialog.querySelector("form")); dialog.remove(); });
 }
@@ -305,7 +323,7 @@ async function finishPackagingRun(runId, form) {
     const data = Object.fromEntries(new FormData(form));
     const batch = state.batches.find((item) => item.id === selectedBatchId);
     const run = batch.packagingRuns.find((item) => item.id === runId);
-    Object.assign(run, { status: "packaged", packagedAt: new Date().toISOString(), gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), co2Vol: Number(data.co2Vol), operatorId: currentOperator().id });
+    Object.assign(run, { status: "packaged", packagedAt: new Date(data.packagedAt).toISOString(), gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: null, co2Vol: Number(data.co2Vol), operatorId: currentOperator().id });
     if (completedPackagingVolume(batch) >= Number(batch.volumeTons)) {
       batch.status = BATCH_STATUS.FINISHED;
       batch.finishedAt = run.packagedAt;
@@ -324,12 +342,12 @@ async function completeAction(type, form) {
   try {
     const data = Object.fromEntries(new FormData(form));
     const batch = state.batches.find((item) => item.id === selectedBatchId);
-    const action = { id: crypto.randomUUID(), type, performedAt: new Date().toISOString(), gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), operatorId: currentOperator().id };
+    const action = { id: crypto.randomUUID(), type, performedAt: new Date(data.performedAt).toISOString(), gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), operatorId: currentOperator().id };
     batch.actions = batch.actions.filter((item) => item.type !== type); batch.actions.push(action);
     if (type === ACTION_TYPES.DRY_HOP) batch.status = BATCH_STATUS.DRY_HOP;
     if (type === ACTION_TYPES.COOL) batch.status = BATCH_STATUS.COOLING;
     if (type === ACTION_TYPES.FINISH) batch.status = BATCH_STATUS.FINISHED;
-    const actionMeasurement = { id: crypto.randomUUID(), measuredAt: action.performedAt, gravity: action.gravity, ph: action.ph, temperature: action.temperature, pressure: action.pressure, note: ACTION_LABELS[type], operatorId: action.operatorId };
+    const actionMeasurement = { id: crypto.randomUUID(), measuredAt: action.performedAt, gravity: action.gravity, ph: action.ph, temperature: action.temperature, pressure: action.pressure, note: ACTION_LABELS[type], operatorId: action.operatorId, processActionId: action.id, actionType: type };
     batch.measurements.push(actionMeasurement);
     await saveAndSync({ entity: "action", operation: "create", entityId: action.id }); render();
     await saveAndSync({ entity: "measurement", operation: "create", entityId: actionMeasurement.id });

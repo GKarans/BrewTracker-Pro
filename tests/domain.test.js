@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BATCH_STATUS, calculateHistoryStats, completedPackagingVolume, formatBatchNumber, getFermenter, getRecommendedAction, requiredPackagingRuns, validateGravity } from "../src/domain.js";
+import { BATCH_STATUS, calculateHistoryStats, completedPackagingVolume, formatBatchNumber, getFermenter, getRecommendedAction, remainingInFermenter, requiredPackagingRuns, validateGravity } from "../src/domain.js";
 
 describe("partijas numurs", () => {
   it("apvieno divciparu gadu, kārtas numuru un tvertni", () => {
@@ -38,5 +38,6 @@ describe("tvertnes un pildīšana", () => {
   it("8 tonnu partijai paredz divus pildīšanas ciklus", () => {
     expect(requiredPackagingRuns(8)).toBe(2);
     expect(completedPackagingVolume({ packagingRuns: [{ status: "packaged", volumeTons: 4 }, { status: "filtered", volumeTons: 4 }] })).toBe(4);
+    expect(remainingInFermenter({ volumeTons: 8, packagingRuns: [{ status: "filtered", volumeTons: 4 }] })).toBe(4);
   });
 });

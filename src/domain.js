@@ -41,6 +41,14 @@ export function completedPackagingVolume(batch) {
     .reduce((total, run) => total + Number(run.volumeTons), 0);
 }
 
+export function filteredVolume(batch) {
+  return (batch.packagingRuns || []).reduce((total, run) => total + Number(run.volumeTons), 0);
+}
+
+export function remainingInFermenter(batch) {
+  return Math.max(0, Number(batch.volumeTons) - filteredVolume(batch));
+}
+
 export function formatBatchNumber(year, sequence, fermenterNumber) {
   const shortYear = String(year).slice(-2);
   if (!Number.isInteger(sequence) || sequence < 1 || sequence > 999) {
