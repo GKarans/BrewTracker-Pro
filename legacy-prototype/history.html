@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="style.css" />
+    <title>Vēsture</title>
+    <script>
+      document.addEventListener("DOMContentLoaded", function () {
+        const finishedBeers =
+          JSON.parse(localStorage.getItem("finishedBeers")) || [];
+        const beerCardsContainer = document.getElementById("beer-cards");
+
+        // Sort by date, newest first
+        finishedBeers.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        const groupedBeers = groupBeersByName(finishedBeers);
+
+        Object.keys(groupedBeers).forEach((beerName) => {
+          const entries = groupedBeers[beerName];
+
+          const beerCard = document.createElement("div");
+          beerCard.className = "beer-card";
+
+          // Create the main header with click event to toggle details
+          const header = document.createElement("h2");
+          header.innerText = beerName; // Only display the beer name
+          header.onclick = () => toggleDetails(beerCard);
+
+          beerCard.appendChild(header);
+
+          // Create details section for all entries of the beer
+          const detailsDiv = document.createElement("div");
+          detailsDiv.className = "beer-details";
+          detailsDiv.style.display = "none"; // Initially hidden
+
+          entries.forEach((entry) => {
+            const entryDiv = document.createElement("div");
+            entryDiv.className = "entry"; // Added class for individual entry separation
+            entryDiv.innerHTML = `
+                        <strong>Date:</strong> ${entry.date} <br />
+                        <label>Gravity: <span>${entry.gravity}</span></label>
+                        <label>pH: <span>${entry.ph}</span></label>
+                        <label>Temperature: <span>${
+                          entry.temperature
+                        }</span></label>
+                        <label>Dry Hop: <input type="checkbox" ${
+                          entry.dryHop ? "checked" : ""
+                        } disabled /></label>
+                        <label>Cold Crash: <input type="checkbox" ${
+                          entry.coldCrash ? "checked" : ""
+                        } disabled /></label>
+                    `;
+            detailsDiv.appendChild(entryDiv);
+          });
+
+          // Add a delete button for the beer
+          const deleteBtn = document.createElement("button");
+          deleteBtn.innerText = "Delete All Entries";
+          deleteBtn.className = "delete-btn";
+          deleteBtn.onclick = () => deleteBeer(beerName);
+
+          beerCard.appendChild(detailsDiv);
+          beerCard.appendChild(deleteBtn);
+          beerCardsContainer.appendChild(beerCard);
+        });
+      });
+
+      function groupBeersByName(finishedBeers) {
+        return finishedBeers.reduce((acc, beer) => {
+          if (!acc[beer.name]) {
+            acc[beer.name] = [];
+          }
+          acc[beer.name].push(beer);
+          return acc;
+        }, {});
+      }
+
+      function toggleDetails(card) {
+        const details = card.querySelector(".beer-details"); // Get the details div
+        details.style.display =
+          details.style.display === "none" ? "block" : "none";
+      }
+
+      function deleteBeer(name) {
+        const finishedBeers =
+          JSON.parse(localStorage.getItem("finishedBeers")) || [];
+        const filteredFinishedBeers = finishedBeers.filter(
+          (b) => b.name !== name
+        );
+        localStorage.setItem(
+          "finishedBeers",
+          JSON.stringify(filteredFinishedBeers)
+        );
+        // Refresh the page to reflect the changes
+        window.location.reload();
+      }
+    </script>
+    <style>
+      .beer-details {
+        margin-left: 20px; /* Add some spacing to the left */
+        margin-bottom: 20px; /* Add some spacing to the bottom */
+      }
+      .beer-card {
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        padding: 10px;
+        margin-bottom: 15px;
+        background-color: #f9f9f9;
+      }
+      .entry {
+        border: 1px solid #ddd; /* Add a border for entry separation */
+        padding: 10px; /* Add padding for aesthetics */
+        margin-bottom: 10px; /* Space between entries */
+        border-radius: 5px; /* Rounded corners for better UI */
+        background-color: #f2f2f2; /* Light background color for entries */
+      }
+      .delete-btn {
+        background-color: #ff4d4d;
+        color: white;
+        border: none;
+        padding: 5px 10px;
+        border-radius: 5px;
+        cursor: pointer;
+        margin-top: 10px; /* Add some space above the button */
+      }
+      .delete-btn:hover {
+        background-color: #ff1a1a;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>Vēsture</h1>
+      <div class="table-container" id="beer-cards">
+        <!-- Beer cards will be dynamically populated -->
+      </div>
+    </div>
+    <div class="back-btn">
+      <a href="index.html">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke-width="1.5"
+          stroke="currentColor"
+          class="back-icon"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3"
+          />
+        </svg>
+      </a>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="style.css" />
+    <title>BrewHelp</title>
+    <script>
+      function saveData(event) {
+        event.preventDefault();
+        const date = document.querySelector('input[type="date"]').value;
+        const name = document.querySelector('input[name="beer-name"]').value;
+        const gravity = document.querySelector('input[name="gravity"]').value;
+        const ph = document.querySelector('input[name="ph"]').value;
+        const temperature = document.querySelector(
+          'input[name="temperatura"]'
+        ).value;
+        const dryHop = document.querySelector('input[name="dry-hop"]').checked;
+        const coldCrash = document.querySelector(
+          'input[name="cold-crash"]'
+        ).checked;
+
+        const beerData = {
+          date,
+          name,
+          gravity,
+          ph,
+          temperature,
+          dryHop,
+          coldCrash,
+        };
+
+        const beerList = JSON.parse(localStorage.getItem("beerList")) || [];
+        beerList.push(beerData);
+        localStorage.setItem("beerList", JSON.stringify(beerList));
+
+        const beerNames = [...new Set(beerList.map((beer) => beer.name))];
+        localStorage.setItem("beerNames", JSON.stringify(beerNames));
+
+        window.location.href = "active-beer.html";
+      }
+      function calculateDaysSince(date) {
+        const brewedDate = new Date(date);
+        const today = new Date();
+        const timeDifference = today - brewedDate;
+        const daysDifference = Math.floor(
+          timeDifference / (1000 * 60 * 60 * 24)
+        );
+        return daysDifference;
+      }
+
+      function calculateDaysSince(date) {
+        const brewedDate = new Date(date);
+        const today = new Date();
+        const timeDifference = today - brewedDate;
+        const daysDifference = Math.floor(
+          timeDifference / (1000 * 60 * 60 * 24)
+        );
+        return daysDifference;
+      }
+
+      function updateDaysSince() {
+        const beerNameInput = document.querySelector('input[name="beer-name"]');
+        const daysSinceSpan = document.getElementById("days-since");
+        const beerList = JSON.parse(localStorage.getItem("beerList")) || [];
+
+        const selectedBeerName = beerNameInput.value;
+        const selectedBeer = beerList.find(
+          (beer) => beer.name === selectedBeerName
+        );
+
+        if (selectedBeer) {
+          const days = calculateDaysSince(selectedBeer.date);
+          daysSinceSpan.textContent = days; // Update the span with the calculated days
+        } else {
+          daysSinceSpan.textContent = "0"; // Default to 0 if no beer is found
+        }
+      }
+
+      function loadBeerNames() {
+        const beerNames = JSON.parse(localStorage.getItem("beerNames")) || [];
+        const beerNameInput = document.querySelector('input[name="beer-name"]');
+        const beerOptions = document.getElementById("beer-options");
+
+        beerNames.forEach((name) => {
+          const option = document.createElement("option");
+          option.value = name;
+          beerOptions.appendChild(option);
+        });
+
+        // Event listener for when the user selects a beer
+        beerNameInput.addEventListener("change", updateDaysSince);
+      }
+
+      window.onload = loadBeerNames;
+    </script>
+  </head>
+  <body>
+    <div class="container">
+      <h1>BrewHelp</h1>
+      <form class="new-beer" netlify onsubmit="saveData(event)">
+        <label for="date">Datums</label>
+        <input type="date" class="date" required />
+        <label for="beer-name">Nosaukums</label>
+        <input
+          type="text"
+          class="beer-name"
+          name="beer-name"
+          list="beer-options"
+          required
+        />
+        <datalist id="beer-options"></datalist>
+        <label for="gravity">Blīvums</label>
+        <input type="text" class="gravity" name="gravity" required />
+        <label for="ph">PH</label>
+        <input type="text" class="ph" name="ph" required />
+        <label for="temperatura">Temperatūra</label>
+        <input type="text" class="temperatura" name="temperatura" required />
+        <label for="dry-hop">Kaķo?</label>
+        <input type="checkbox" name="dry-hop" id="dry" />
+        <label for="cold-crash">Met uz O° C?</label>
+        <input type="checkbox" name="cold-crash" id="cold" />
+        <button class="submit">Sumbit</button>
+      </form>
+      <p>Vārīts pirms <span id="days-since">X</span> dienām!</p>
+      <a href="index.html" class="back-icon">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke-width="1.5"
+          stroke="currentColor"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3"
+          />
+        </svg>
+      </a>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="style.css" />
+    <title>Aktīvie ali</title>
+    <script>
+      document.addEventListener("DOMContentLoaded", function () {
+        const beerList = JSON.parse(localStorage.getItem("beerList")) || [];
+        const taskList = JSON.parse(localStorage.getItem("taskList")) || {};
+        const groupedBeers = groupBeersByName(beerList);
+        const beerCardsContainer = document.getElementById("beer-cards");
+
+        const sortedBeerNames = Object.keys(groupedBeers).sort((a, b) => {
+          const firstDateA = new Date(groupedBeers[a][0].date);
+          const firstDateB = new Date(groupedBeers[b][0].date);
+          return firstDateA - firstDateB;
+        });
+
+        sortedBeerNames.forEach((beerName) => {
+          const entries = groupedBeers[beerName];
+          const beerCard = document.createElement("div");
+          beerCard.className = "beer-card";
+
+          const header = document.createElement("h2");
+          header.innerText = `${entries[0].date} - ${entries[0].name}`;
+          header.onclick = () => toggleDetails(detailsDiv);
+          beerCard.appendChild(header);
+
+          const detailsDiv = document.createElement("div");
+          detailsDiv.className = "beer-details";
+          detailsDiv.style.display = "none"; // Initially hidden
+
+          entries
+            .sort((a, b) => new Date(a.date) - new Date(b.date))
+            .forEach((entry) => {
+              const entryDiv = createEntryDiv(entry);
+              detailsDiv.appendChild(entryDiv);
+            });
+
+          // Task section
+          const taskDiv = document.createElement("div");
+          taskDiv.className = "task-section";
+          const taskListForBeer = taskList[beerName] || [];
+
+          taskListForBeer.forEach((task, index) => {
+            const taskElement = createTaskElement(task, beerName, index);
+            taskDiv.appendChild(taskElement);
+          });
+
+          const addTaskButton = document.createElement("button");
+          addTaskButton.innerText = "Add Task";
+          addTaskButton.className = "task-btn";
+          addTaskButton.onclick = () => {
+            const newTaskInput = createTaskInput(beerName, taskDiv);
+            taskDiv.appendChild(newTaskInput);
+          };
+
+          // Append the task section and buttons
+          beerCard.appendChild(detailsDiv);
+          beerCard.appendChild(taskDiv);
+          beerCard.appendChild(addTaskButton);
+
+          // New button to add input fields
+          const addInputButton = document.createElement("button");
+          addInputButton.innerText = "Add";
+          addInputButton.className = "add-btn";
+          addInputButton.onclick = () => {
+            const newInputDiv = createNewInputDiv(entries[0].name, detailsDiv);
+            detailsDiv.appendChild(newInputDiv);
+          };
+
+          // Finish button
+          const finishButton = document.createElement("button");
+          finishButton.innerText = "Finish";
+          finishButton.className = "finish-btn";
+          finishButton.onclick = () => finishBeer(beerName, entries);
+
+          beerCard.appendChild(addInputButton);
+          beerCard.appendChild(finishButton);
+          beerCardsContainer.appendChild(beerCard);
+        });
+      });
+
+      function groupBeersByName(beerList) {
+        return beerList.reduce((acc, beer) => {
+          if (!acc[beer.name]) {
+            acc[beer.name] = [];
+          }
+          acc[beer.name].push(beer);
+          return acc;
+        }, {});
+      }
+
+      function toggleDetails(detailsDiv) {
+        const isHidden = detailsDiv.style.display === "none";
+        detailsDiv.style.display = isHidden ? "block" : "none";
+      }
+
+      function createEntryDiv(entry) {
+        const entryDiv = document.createElement("div");
+        entryDiv.className = "entry-div";
+        entryDiv.innerHTML = `
+    <strong>Date:</strong> ${entry.date} <br />
+    <label>Gravity: <span>${entry.gravity}</span></label>
+    <label>pH: <span>${entry.ph}</span></label>
+    <label>Temperature: <span>${entry.temperature}</span></label>
+    <label>Dry Hop: <input type="checkbox" ${
+      entry.dryHop ? "checked" : ""
+    } disabled /></label>
+    <label>Cold Crash: <input type="checkbox" ${
+      entry.coldCrash ? "checked" : ""
+    } disabled /></label>
+    <button class="delete-btn" onclick="deleteEntry('${entry.date}', '${
+          entry.name
+        }')">Delete</button>
+  `;
+        return entryDiv;
+      }
+
+      function createNewInputDiv(beerName, detailsDiv) {
+        const newInputDiv = document.createElement("div");
+        newInputDiv.className = "new-input-div";
+        newInputDiv.innerHTML = `
+    <strong>Date:</strong> <input type="text" placeholder="YYYY-MM-DD" />
+    <label>Gravity: <input type="number" /></label>
+    <label>pH: <input type="number" /></label>
+    <label>Temperature: <input type="number" /></label>
+    <label>Dry Hop: <input type="checkbox" /></label>
+    <label>Cold Crash: <input type="checkbox" /></label>
+    <button onclick="addNewEntryToBeer('${beerName}', this.parentElement)">Save</button>
+  `;
+        return newInputDiv;
+      }
+
+      function addNewEntryToBeer(beerName, inputDiv) {
+        const date = inputDiv.querySelector("input[type='text']").value;
+        const gravity = inputDiv.querySelectorAll("input[type='number']")[0]
+          .value;
+        const ph = inputDiv.querySelectorAll("input[type='number']")[1].value;
+        const temperature = inputDiv.querySelectorAll("input[type='number']")[2]
+          .value;
+        const dryHop = inputDiv.querySelector("input[type='checkbox']").checked;
+        const coldCrash = inputDiv.querySelectorAll("input[type='checkbox']")[1]
+          .checked;
+
+        const beerList = JSON.parse(localStorage.getItem("beerList")) || [];
+        beerList.push({
+          name: beerName,
+          date,
+          gravity,
+          ph,
+          temperature,
+          dryHop,
+          coldCrash,
+        });
+        localStorage.setItem("beerList", JSON.stringify(beerList));
+
+        const newEntryDiv = createEntryDiv({
+          name: beerName,
+          date,
+          gravity,
+          ph,
+          temperature,
+          dryHop,
+          coldCrash,
+        });
+        inputDiv.parentElement.appendChild(newEntryDiv);
+        inputDiv.remove();
+      }
+
+      function finishBeer(beerName, entries) {
+        const finishedBeers =
+          JSON.parse(localStorage.getItem("finishedBeers")) || [];
+        finishedBeers.push(...entries);
+        localStorage.setItem("finishedBeers", JSON.stringify(finishedBeers));
+
+        const beerList = JSON.parse(localStorage.getItem("beerList")) || [];
+        const filteredBeerList = beerList.filter((b) => b.name !== beerName);
+        localStorage.setItem("beerList", JSON.stringify(filteredBeerList));
+
+        window.location.href = "history.html";
+      }
+
+      function deleteEntry(date, name) {
+        const beerList = JSON.parse(localStorage.getItem("beerList")) || [];
+        const filteredBeerList = beerList.filter(
+          (entry) => !(entry.date === date && entry.name === name)
+        );
+        localStorage.setItem("beerList", JSON.stringify(filteredBeerList));
+        window.location.reload();
+      }
+
+      function createTaskElement(task, beerName, index) {
+        const taskElement = document.createElement("div");
+        taskElement.className = "task-div";
+        taskElement.innerHTML = `
+    <input type="checkbox" ${
+      task.done ? "checked" : ""
+    } onchange="toggleTaskStatus('${beerName}', ${index})" />
+    <label>${task.text}</label>
+    <button class="delete-task-btn" onclick="deleteTask('${beerName}', ${index})">Delete</button>
+  `;
+        return taskElement;
+      }
+
+      function createTaskInput(beerName, taskDiv) {
+        const taskInputDiv = document.createElement("div");
+        taskInputDiv.className = "task-input-div";
+        taskInputDiv.innerHTML = `
+    <input type="text" placeholder="Enter task..." />
+    <button onclick="addTask('${beerName}', this.parentElement)">Save Task</button>
+  `;
+        return taskInputDiv;
+      }
+
+      function addTask(beerName, taskInputDiv) {
+        const taskText = taskInputDiv.querySelector("input[type='text']").value;
+        if (taskText.trim() === "") return;
+
+        const taskList = JSON.parse(localStorage.getItem("taskList")) || {};
+        if (!taskList[beerName]) {
+          taskList[beerName] = [];
+        }
+        taskList[beerName].push({ text: taskText, done: false });
+        localStorage.setItem("taskList", JSON.stringify(taskList));
+
+        const taskElement = createTaskElement(
+          { text: taskText, done: false },
+          beerName,
+          taskList[beerName].length - 1
+        );
+        taskInputDiv.parentElement.appendChild(taskElement);
+        taskInputDiv.remove();
+      }
+
+      function toggleTaskStatus(beerName, index) {
+        const taskList = JSON.parse(localStorage.getItem("taskList")) || {};
+        if (taskList[beerName]) {
+          taskList[beerName][index].done = !taskList[beerName][index].done;
+          localStorage.setItem("taskList", JSON.stringify(taskList));
+        }
+      }
+
+      function deleteTask(beerName, index) {
+        const taskList = JSON.parse(localStorage.getItem("taskList")) || {};
+        if (taskList[beerName]) {
+          taskList[beerName].splice(index, 1);
+          localStorage.setItem("taskList", JSON.stringify(taskList));
+          window.location.reload();
+        }
+      }
+    </script>
+    <style>
+      .beer-details {
+        margin-left: 20px;
+        margin-bottom: 10px;
+      }
+      .beer-card {
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        padding: 10px;
+        margin-bottom: 15px;
+        background-color: #f9f9f9;
+      }
+      label {
+        display: block;
+      }
+      .entry-div {
+        border: 1px solid #ddd; /* Add a border for entry separation */
+        padding: 10px; /* Add padding for aesthetics */
+        margin-bottom: 10px; /* Space between entries */
+        border-radius: 5px; /* Rounded corners for better UI */
+        background-color: #f2f2f2; /* Light background color for entries */
+      }
+      .new-input-div {
+        border: 1px solid #ccc; /* Light border for new input section */
+        padding: 10px; /* Add padding */
+        margin-bottom: 10px; /* Space between inputs */
+        border-radius: 5px; /* Rounded corners */
+        background-color: #f9f9f9; /* Background for new inputs */
+      }
+      .delete-btn,
+      .add-btn,
+      .finish-btn,
+      .task-btn,
+      .delete-task-btn {
+        padding: 5px 10px; /* Add padding to all buttons */
+        border-radius: 5px;
+        border: none;
+        cursor: pointer;
+        margin-top: 5px; /* Add margin to separate from other elements */
+      }
+      .delete-btn,
+      .delete-task-btn {
+        background-color: #ff4d4d;
+        color: white;
+      }
+      .delete-btn:hover,
+      .delete-task-btn:hover {
+        background-color: #ff1a1a;
+      }
+      .add-btn {
+        background-color: lightgrey; /* Change background color to light grey */
+        color: black;
+        margin-right: 200px;
+        margin-left: 200px;
+      }
+      .finish-btn {
+        background-color: green; /* Change background color to green */
+        color: white;
+      }
+      .finish-btn:hover {
+        background-color: darkgreen; /* Darker green on hover */
+      }
+
+      .task-section {
+        margin-top: 15px;
+        border-top: 1px solid #ccc;
+        padding-top: 10px;
+      }
+      .task-div {
+        margin-bottom: 10px;
+        display: flex;
+        align-items: center;
+      }
+
+      .delete-task-btn {
+        margin-left: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>Aktīvie ali</h1>
+      <div class="table-container">
+        <div id="beer-cards">
+          <!-- Rows will be dynamically populated as cards -->
+        </div>
+      </div>
+    </div>
+    <div class="back-btn">
+      <a href="index.html">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke-width="1.5"
+          stroke="currentColor"
+          class="back-icon"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3"
+          />
+        </svg>
+      </a>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,248 @@
+* {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  margin: 50px auto;
+  font-family: Arial, sans-serif;
+  background-color: #f9f9f9; /* Light background for readability */
+}
+
+.container {
+  margin: auto;
+  width: 50%;
+  border: 3px solid green;
+  padding: 20px; /* Added padding for better spacing */
+  display: flex;
+  flex-direction: column;
+  background-color: white; /* White background for container */
+  border-radius: 10px; /* Rounded corners */
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1); /* Subtle shadow */
+}
+
+h1 {
+  text-align: center;
+  color: #333; /* Darker text for headings */
+}
+
+.btn {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-around;
+  gap: 50px;
+  margin-bottom: 20px; /* Space below buttons */
+}
+
+.btn a {
+  color: white; /* White text for button readability */
+  text-decoration: none;
+  font-size: 20px; /* Adjusted font size */
+  text-transform: uppercase;
+  padding: 10px 40px; /* Reduced padding */
+  border-radius: 5px; /* Slightly rounded corners */
+  transition: background-color 0.3s; /* Transition effect */
+}
+
+.btn a:first-child {
+  background-color: rgb(97, 159, 4); /* Green background */
+}
+
+.btn a:last-child {
+  background-color: rgb(222, 95, 10); /* Orange background */
+}
+
+.btn a:hover {
+  background-color: rgba(0, 0, 0, 0.1); /* Slight darkening on hover */
+}
+
+.add-icon {
+  margin-left: 20px;
+  margin-bottom: 20px;
+  stroke: green;
+  width: 48px; /* Reduced size */
+  height: 48px; /* Reduced size */
+}
+
+.back-icon {
+  margin-left: 20px;
+  width: 30px; /* Adjusted size for consistency */
+  height: 30px; /* Adjusted size for consistency */
+  stroke: #000;
+}
+
+.new-beer {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px; /* Reduced gap for better alignment */
+}
+
+.new-beer input,
+.new-beer label {
+  margin: 5px 0; /* Consistent margin */
+  padding: 5px; /* Added padding for better touch targets */
+}
+
+.new-beer label {
+  text-align: left; /* Align labels to the left */
+  font-weight: bold; /* Make labels bold */
+}
+
+.new-beer input {
+  width: 70%; /* Full width input fields */
+  padding: 10px; /* Added padding for comfort */
+  border: 1px solid #ccc; /* Light border for input fields */
+  border-radius: 5px; /* Slightly rounded corners */
+}
+
+.submit {
+  grid-column: 1 / -1; /* Span the entire width */
+  padding: 12px; /* Increased padding */
+  background-color: #5d7b9d; /* Submit button color */
+  color: white; /* White text */
+  border: none; /* No border */
+  border-radius: 5px; /* Rounded corners */
+  cursor: pointer; /* Pointer cursor */
+  transition: background-color 0.3s; /* Transition for hover effect */
+  font-size: 16px; /* Adjusted font size */
+}
+
+.submit:hover {
+  background-color: #4a5d7b; /* Darker shade on hover */
+}
+
+table {
+  width: 100%; /* Table width */
+  margin: 20px auto; /* Centered margin */
+  border-collapse: collapse; /* Collapse borders */
+}
+
+th,
+td {
+  padding: 10px; /* Padding for table cells */
+  border: 1px solid #ddd; /* Light border for table cells */
+  text-align: left; /* Left-align text */
+}
+
+.delete-btn {
+  background: none; /* No background */
+  border: none; /* No border */
+  cursor: pointer; /* Pointer cursor */
+  padding: 0; /* No padding */
+}
+
+/* Checkbox styles */
+input[type="checkbox"] {
+  margin: 0; /* Remove any margin */
+  cursor: pointer; /* Pointer cursor for checkbox */
+}
+
+/* Additional styles for table header */
+th {
+  color: White; /* White text for header */
+  background-color: #5d7b9d; /* Header background color */
+  font-weight: bold; /* Bold text for header */
+  font-style: italic; /* Italic style for header */
+}
+
+/* Back button styling for active-beer page */
+.back-btn {
+  display: flex;
+  justify-content: center;
+  margin-top: 20px; /* Space above */
+}
+.beer-card {
+  border: 1px solid #ddd; /* Add border for each beer card */
+  margin: 10px 0; /* Space between beer cards */
+  padding: 10px; /* Padding for beer cards */
+  border-radius: 5px; /* Rounded corners */
+  background-color: #f9f9f9; /* Light background for beer cards */
+}
+
+.beer-details label {
+  display: block; /* Stack labels */
+  margin: 5px 0; /* Space between labels */
+}
+
+.delete-btn {
+  margin-bottom: 15px; /* Space above the delete button */
+  background-color: red; /* Red background for delete button */
+  color: white; /* White text for delete button */
+  border: none; /* No border */
+  padding: 8px 16px; /* Padding for delete button */
+  border-radius: 5px; /* Rounded corners */
+  cursor: pointer; /* Pointer cursor for delete button */
+}
+
+/* Media Queries */
+@media (max-width: 768px) {
+  .container {
+    width: 50%; /* Wider container on smaller screens */
+  }
+
+  .btn {
+    flex-direction: column; /* Stack buttons vertically */
+    gap: 20px; /* Adjust gap */
+  }
+
+  .btn a {
+    width: 100%; /* Full width buttons */
+    padding: 15px; /* Increase padding */
+    font-size: 18px; /* Adjust font size */
+  }
+
+  .new-beer {
+    grid-template-columns: 1fr; /* Stack input fields */
+  }
+
+  .new-beer input {
+    width: 80%; /* Full width input fields */
+  }
+
+  table {
+    font-size: 14px; /* Smaller font for table */
+    /* display: flex;
+    flex-direction: column; */
+  }
+}
+@media (max-width: 768px) {
+  .container {
+    width: 80%; /* Wider container on smaller screens */
+  }
+
+  .btn {
+    flex-direction: column; /* Stack buttons vertically */
+    gap: 20px; /* Adjust gap */
+  }
+
+  .btn a {
+    width: 100%; /* Full width buttons */
+    padding: 15px; /* Increase padding */
+    font-size: 18px; /* Adjust font size */
+  }
+
+  table {
+    display: none; /* Hide the original table */
+  }
+
+  .beer-card {
+    border: 1px solid #ddd; /* Add border for each beer card */
+    margin: 10px 0; /* Space between beer cards */
+    padding: 10px; /* Padding for beer cards */
+    border-radius: 5px; /* Rounded corners */
+    background-color: #f9f9f9; /* Light background for beer cards */
+  }
+
+  .beer-card.hidden {
+    display: none; /* Hide by default */
+  }
+
+  .beer-details {
+    display: none; /* Hide details by default */
+  }
+
+  .beer-card h2 {
+    cursor: pointer; /* Change cursor to pointer */
+  }
+}
