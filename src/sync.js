@@ -51,6 +51,10 @@ export async function fetchRemoteState(localState, breweryId) {
 
 export async function syncEvent(state, event, breweryId) {
   if (!navigator.onLine) return false;
+  if (event.entity === "batch" && event.operation === "delete") {
+    throwOnError(await supabase.from("batches").delete().eq("id", event.entityId).eq("brewery_id", breweryId));
+    return true;
+  }
   if (event.entity === "batch") {
     const batch = state.batches.find((item) => item.id === event.entityId);
     const beer = state.beerTypes.find((item) => item.id === batch?.beerTypeId);
