@@ -10,6 +10,8 @@ let route = "dashboard";
 let selectedBatchId = null;
 let authSession = null;
 let authMode = "login";
+let brewery = null;
+let operatorUnlocked = false;
 
 function icon(name, size = 20) {
   return createElement(icons[name], { width: size, height: size, "stroke-width": 2.2 }).outerHTML;
@@ -17,6 +19,67 @@ function icon(name, size = 20) {
 
 function authPage(message = "", isError = false) {
   app.innerHTML = `<main class="auth-page"><section class="auth-card"><div class="auth-brand"><span class="brand-mark">BT</span><div><h1>BrewTracker Pro</h1><p>Alus fermentācijas procesa asistents</p></div></div><div class="auth-tabs"><button type="button" data-auth-mode="login" class="${authMode === "login" ? "active" : ""}">Ieiet</button><button type="button" data-auth-mode="signup" class="${authMode === "signup" ? "active" : ""}">Reģistrēties</button></div><form id="auth-form"><div class="field"><label>E-pasts</label><input name="email" type="email" autocomplete="email" required placeholder="daritava@epasts.lv"></div><div class="field"><label>Parole</label><input name="password" type="password" autocomplete="${authMode === "login" ? "current-password" : "new-password"}" minlength="8" required placeholder="Vismaz 8 rakstzīmes"></div>${authMode === "signup" ? `<div class="field"><label>Atkārto paroli</label><input name="passwordConfirm" type="password" autocomplete="new-password" minlength="8" required></div>` : ""}<div class="auth-message ${isError ? "error" : ""}">${message}</div><button class="primary full" type="submit">${authMode === "login" ? "Ieiet aplikācijā" : "Izveidot kontu"}</button></form><p class="auth-note">Šis būs viens kopīgs alus darītavas konts. Darbinieku darbības tiks nošķirtas ar operatoru profiliem un PIN.</p></section></main>`;
+}
+
+function onboardingPage(message = "") {
+  app.innerHTML = `<main class="auth-page"><section class="auth-card"><div class="auth-brand"><span class="brand-mark">BT</span><div><h1>Sākotnējā iestatīšana</h1><p>Izveido alus darītavu un pirmo operatoru</p></div></div><form id="onboarding-form"><div class="field"><label>Alus darītavas nosaukums</label><input name="breweryName" required value="Labietis" autocomplete="organization"></div><div class="field"><label>Pirmā operatora vārds</label><input name="operatorName" required autocomplete="name" placeholder="Piemēram, Jānis"></div><div class="field"><label>Operatora PIN</label><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" required placeholder="4–8 cipari"></div><div class="field"><label>Atkārto PIN</label><input name="pinConfirm" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" required></div><div class="auth-message error">${message}</div><button class="primary full" type="submit">Izveidot darba vidi</button></form><p class="auth-note">Tiks automātiski izveidotas 13 fermentācijas tvertnes. Vēlāk varēsi pievienot pārējos operatorus.</p></section></main>`;
+}
+
+function operatorUnlockPage(message = "") {
+  app.innerHTML = `<main class="auth-page"><section class="auth-card"><div class="auth-brand"><span class="brand-mark">BT</span><div><h1>Kas šobrīd strādā?</h1><p>${brewery?.name || "BrewTracker Pro"}</p></div></div><form id="operator-unlock-form"><div class="field"><label>Operators</label><select name="operatorId" required><option value="">Izvēlies savu profilu</option>${state.operators.filter((operator) => operator.is_active !== false).map((operator) => `<option value="${operator.id}">${operator.name}</option>`).join("")}</select></div><div class="field"><label>PIN</label><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" required placeholder="••••"></div><div class="auth-message error">${message}</div><button class="primary full" type="submit">Turpināt</button><button class="text-button auth-logout" type="button" data-auth-logout>Iziet no kopīgā konta</button></form></section></main>`;
+}
+
+async function loadWorkspace() {
+  const { data: breweryData, error } = await supabase.from("breweries").select("id, name").maybeSingle();
+  if (error) {
+    if (error.code === "42P01") onboardingPage("Datubāzes tabulas nav atrastas. Pārbaudi, vai pirmā SQL migrācija ir izpildīta.");
+    else onboardingPage(`Neizdevās ielādēt darba vidi: ${error.message}`);
+    return;
+  }
+  brewery = breweryData;
+  if (!brewery) { onboardingPage(); return; }
+  const { data: operators, error: operatorError } = await supabase.from("operators").select("id, name, is_active").order("created_at");
+  if (operatorError) { operatorUnlockPage(`Neizdevās ielādēt operatorus: ${operatorError.message}`); return; }
+  state.operators = operators || [];
+  const rememberedOperator = sessionStorage.getItem("brewtracker-operator-id");
+  if (rememberedOperator && state.operators.some((operator) => operator.id === rememberedOperator)) {
+    state.activeOperatorId = rememberedOperator;
+  }
+  operatorUnlocked = false;
+  operatorUnlockPage();
+}
+
+async function submitOnboarding(form) {
+  const data = Object.fromEntries(new FormData(form));
+  if (data.pin !== data.pinConfirm) { onboardingPage("PIN kodi nesakrīt."); return; }
+  const button = form.querySelector('button[type="submit"]');
+  button.disabled = true; button.textContent = "Veido darba vidi…";
+  const { data: result, error } = await supabase.rpc("bootstrap_brewery", {
+    brewery_name: data.breweryName.trim(),
+    operator_name: data.operatorName.trim(),
+    operator_pin: data.pin,
+  });
+  if (error) { onboardingPage(error.message.includes("Could not find") ? "Nav atrasta sākotnējās iestatīšanas funkcija. Izpildi jaunāko SQL migrāciju." : error.message); return; }
+  brewery = { id: result.brewery_id, name: result.brewery_name };
+  state.operators = [{ id: result.operator_id, name: result.operator_name, is_active: true }];
+  state.activeOperatorId = result.operator_id;
+  operatorUnlocked = true;
+  sessionStorage.setItem("brewtracker-operator-id", result.operator_id);
+  state = await saveState(state);
+  render();
+}
+
+async function submitOperatorUnlock(form) {
+  const data = Object.fromEntries(new FormData(form));
+  const button = form.querySelector('button[type="submit"]');
+  button.disabled = true; button.textContent = "Pārbauda…";
+  const { data: valid, error } = await supabase.rpc("verify_operator", { operator_id: data.operatorId, operator_pin: data.pin });
+  if (error || !valid) { operatorUnlockPage(error ? `PIN pārbaudes kļūda: ${error.message}` : "Nepareizs PIN kods."); return; }
+  state.activeOperatorId = data.operatorId;
+  operatorUnlocked = true;
+  sessionStorage.setItem("brewtracker-operator-id", data.operatorId);
+  state = await saveState(state);
+  render();
 }
 
 async function submitAuth(form) {
@@ -41,7 +104,7 @@ async function submitAuth(form) {
     return;
   }
   authSession = result.data.session;
-  render();
+  await loadWorkspace();
 }
 
 function activeBatches() { return state.batches.filter((batch) => batch.status !== BATCH_STATUS.FINISHED); }
@@ -181,6 +244,7 @@ function render() {
 }
 
 document.addEventListener("click", (event) => {
+  if (event.target.closest("[data-auth-logout]")) { sessionStorage.removeItem("brewtracker-operator-id"); supabase.auth.signOut(); return; }
   const authModeButton = event.target.closest("[data-auth-mode]");
   if (authModeButton) { authMode = authModeButton.dataset.authMode; authPage(); return; }
   const routeButton = event.target.closest("[data-route]");
@@ -197,6 +261,8 @@ document.addEventListener("click", (event) => {
 document.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (event.target.id === "auth-form") { await submitAuth(event.target); return; }
+  if (event.target.id === "onboarding-form") { await submitOnboarding(event.target); return; }
+  if (event.target.id === "operator-unlock-form") { await submitOperatorUnlock(event.target); return; }
   if (event.target.id === "batch-form") await submitBatch(event.target);
   if (event.target.id === "measurement-form") await submitMeasurement(event.target);
   if (event.target.id === "operator-form") {
@@ -218,7 +284,7 @@ async function initializeApp() {
   const { data, error } = await supabase.auth.getSession();
   if (error) { authPage("Neizdevās pārbaudīt sesiju. Pārbaudi interneta savienojumu.", true); return; }
   authSession = data.session;
-  if (authSession) render(); else authPage();
+  if (authSession) await loadWorkspace(); else authPage();
   supabase.auth.onAuthStateChange((_event, session) => {
     authSession = session;
     if (!session) authPage();
