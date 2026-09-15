@@ -2,15 +2,46 @@ import "./styles.css";
 import { icons, createElement } from "lucide";
 import { ACTION_LABELS, ACTION_TYPES, BATCH_STATUS, addDays, calculateHistoryStats, formatBatchNumber, getRecommendedAction, validateGravity, validatePh, validatePressure, validateTemperature } from "./domain.js";
 import { loadState, saveState } from "./store.js";
-import { isSupabaseConfigured } from "./supabase.js";
+import { isSupabaseConfigured, supabase } from "./supabase.js";
 
 const app = document.querySelector("#app");
 let state = await loadState();
 let route = "dashboard";
 let selectedBatchId = null;
+let authSession = null;
+let authMode = "login";
 
 function icon(name, size = 20) {
   return createElement(icons[name], { width: size, height: size, "stroke-width": 2.2 }).outerHTML;
+}
+
+function authPage(message = "", isError = false) {
+  app.innerHTML = `<main class="auth-page"><section class="auth-card"><div class="auth-brand"><span class="brand-mark">BT</span><div><h1>BrewTracker Pro</h1><p>Alus fermentācijas procesa asistents</p></div></div><div class="auth-tabs"><button type="button" data-auth-mode="login" class="${authMode === "login" ? "active" : ""}">Ieiet</button><button type="button" data-auth-mode="signup" class="${authMode === "signup" ? "active" : ""}">Reģistrēties</button></div><form id="auth-form"><div class="field"><label>E-pasts</label><input name="email" type="email" autocomplete="email" required placeholder="daritava@epasts.lv"></div><div class="field"><label>Parole</label><input name="password" type="password" autocomplete="${authMode === "login" ? "current-password" : "new-password"}" minlength="8" required placeholder="Vismaz 8 rakstzīmes"></div>${authMode === "signup" ? `<div class="field"><label>Atkārto paroli</label><input name="passwordConfirm" type="password" autocomplete="new-password" minlength="8" required></div>` : ""}<div class="auth-message ${isError ? "error" : ""}">${message}</div><button class="primary full" type="submit">${authMode === "login" ? "Ieiet aplikācijā" : "Izveidot kontu"}</button></form><p class="auth-note">Šis būs viens kopīgs alus darītavas konts. Darbinieku darbības tiks nošķirtas ar operatoru profiliem un PIN.</p></section></main>`;
+}
+
+async function submitAuth(form) {
+  const data = Object.fromEntries(new FormData(form));
+  if (authMode === "signup" && data.password !== data.passwordConfirm) {
+    authPage("Paroles nesakrīt.", true);
+    return;
+  }
+  const submit = form.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  submit.textContent = "Lūdzu, uzgaidi…";
+  const result = authMode === "login"
+    ? await supabase.auth.signInWithPassword({ email: data.email, password: data.password })
+    : await supabase.auth.signUp({ email: data.email, password: data.password });
+  if (result.error) {
+    authPage(result.error.message === "Invalid login credentials" ? "Nepareizs e-pasts vai parole." : result.error.message, true);
+    return;
+  }
+  if (authMode === "signup" && !result.data.session) {
+    authMode = "login";
+    authPage("Konts izveidots. Pārbaudi e-pastu un apstiprini reģistrāciju, pēc tam ienāc.");
+    return;
+  }
+  authSession = result.data.session;
+  render();
 }
 
 function activeBatches() { return state.batches.filter((batch) => batch.status !== BATCH_STATUS.FINISHED); }
@@ -150,6 +181,8 @@ function render() {
 }
 
 document.addEventListener("click", (event) => {
+  const authModeButton = event.target.closest("[data-auth-mode]");
+  if (authModeButton) { authMode = authModeButton.dataset.authMode; authPage(); return; }
   const routeButton = event.target.closest("[data-route]");
   if (routeButton) { route = routeButton.dataset.route; render(); return; }
   const newButton = event.target.closest('[data-action="new-batch"]');
@@ -163,6 +196,7 @@ document.addEventListener("click", (event) => {
 
 document.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (event.target.id === "auth-form") { await submitAuth(event.target); return; }
   if (event.target.id === "batch-form") await submitBatch(event.target);
   if (event.target.id === "measurement-form") await submitMeasurement(event.target);
   if (event.target.id === "operator-form") {
@@ -178,4 +212,17 @@ document.addEventListener("change", async (event) => {
 
 window.addEventListener("online", render);
 window.addEventListener("offline", render);
-render();
+
+async function initializeApp() {
+  if (!isSupabaseConfigured) { render(); return; }
+  const { data, error } = await supabase.auth.getSession();
+  if (error) { authPage("Neizdevās pārbaudīt sesiju. Pārbaudi interneta savienojumu.", true); return; }
+  authSession = data.session;
+  if (authSession) render(); else authPage();
+  supabase.auth.onAuthStateChange((_event, session) => {
+    authSession = session;
+    if (!session) authPage();
+  });
+}
+
+initializeApp();
