@@ -377,7 +377,33 @@ function historyPage() {
 }
 
 function settingsPage() {
-  shell(`<main class="narrow"><section class="page-heading"><div><p class="eyebrow">Konfigurācija</p><h1>Iestatījumi</h1></div></section><section class="panel"><div class="panel-title"><h2>Operatori</h2><span>Katram operatoram ir savs PIN</span></div><div class="operator-list">${state.operators.map((operator) => `<div class="operator-row"><span class="avatar">${operator.name.slice(0, 1).toUpperCase()}</span><strong>${operator.name}</strong>${operator.id === state.activeOperatorId ? `<span class="current-label">Aktīvs</span>` : ""}</div>`).join("")}<form id="operator-form" class="inline-form"><input name="name" placeholder="Jauna operatora vārds" required><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" placeholder="PIN (4–8 cipari)" required><button class="secondary">${icon("UserPlus")} Pievienot</button></form></div></section><section class="panel notice"><h2>${icon(isSupabaseConfigured ? "CloudCog" : "CloudOff")} ${isSupabaseConfigured ? "Supabase sinhronizācija aktīva" : "Lokālais režīms"}</h2><p>${isSupabaseConfigured ? "Tiešsaistē izmaiņas tiek nosūtītas uz kopīgo datubāzi. Bezsaistē tās paliek šajā ierīcē un tiks nosūtītas pēc interneta atjaunošanās." : "Dati droši glabājas šajā ierīcē ar IndexedDB."}</p><strong>${state.pendingSync.length} ieraksti gaida sinhronizāciju</strong></section></main>`, "Iestatījumi");
+  shell(`<main class="narrow"><section class="page-heading"><div><p class="eyebrow">Konfigurācija</p><h1>Iestatījumi</h1></div></section><section class="panel"><div class="panel-title"><h2>Operatori</h2><span>Katram operatoram ir savs PIN</span></div><div class="operator-list">${state.operators.map((operator) => `<div class="operator-row"><span class="avatar">${operator.name.slice(0, 1).toUpperCase()}</span><strong>${operator.name}</strong>${operator.id === state.activeOperatorId ? `<span class="current-label">Aktīvs</span>` : ""}</div>`).join("")}<form id="operator-form" class="inline-form"><input name="name" placeholder="Jauna operatora vārds" required><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" placeholder="PIN (4–8 cipari)" required><button class="secondary">${icon("UserPlus")} Pievienot</button></form></div></section><section class="panel pin-panel"><div class="panel-title"><div><h2>Mainīt savu PIN</h2><p>Aktīvais operators: ${currentOperator()?.name || "—"}</p></div><span>PIN netiek glabāts atklātā tekstā</span></div><form id="change-pin-form" class="pin-form"><div class="field"><label>Pašreizējais PIN</label><input name="currentPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Jaunais PIN</label><input name="newPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Atkārto jauno PIN</label><input name="newPinConfirm" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="auth-message full" id="pin-message"></div><button class="secondary full">${icon("KeyRound")} Nomainīt PIN</button></form></section><section class="panel notice"><h2>${icon(isSupabaseConfigured ? "CloudCog" : "CloudOff")} ${isSupabaseConfigured ? "Supabase sinhronizācija aktīva" : "Lokālais režīms"}</h2><p>${isSupabaseConfigured ? "Tiešsaistē izmaiņas tiek nosūtītas uz kopīgo datubāzi. Bezsaistē tās paliek šajā ierīcē un tiks nosūtītas pēc interneta atjaunošanās." : "Dati droši glabājas šajā ierīcē ar IndexedDB."}</p><strong>${state.pendingSync.length} ieraksti gaida sinhronizāciju</strong></section></main>`, "Iestatījumi");
+}
+
+async function changeOperatorPin(form) {
+  const data = Object.fromEntries(new FormData(form));
+  const message = form.querySelector("#pin-message");
+  if (data.newPin !== data.newPinConfirm) {
+    message.className = "auth-message error full";
+    message.textContent = "Jaunie PIN kodi nesakrīt.";
+    return;
+  }
+  const button = form.querySelector("button");
+  button.disabled = true; button.textContent = "Maina PIN…";
+  const { data: changed, error } = await supabase.rpc("change_operator_pin", {
+    operator_id: state.activeOperatorId,
+    current_pin: data.currentPin,
+    new_pin: data.newPin,
+  });
+  button.disabled = false; button.innerHTML = `${icon("KeyRound")} Nomainīt PIN`;
+  if (error || !changed) {
+    message.className = "auth-message error full";
+    message.textContent = error ? error.message : "Pašreizējais PIN nav pareizs.";
+    return;
+  }
+  form.reset();
+  message.className = "auth-message full";
+  message.textContent = "PIN veiksmīgi nomainīts.";
 }
 
 function operatorDialog() { operatorUnlocked = false; operatorUnlockPage(); }
@@ -424,6 +450,7 @@ document.addEventListener("submit", async (event) => {
     if (error) { alert(error.message); return; }
     state.operators.push(operator); state = await saveState(state); render();
   }
+  if (event.target.id === "change-pin-form") { await changeOperatorPin(event.target); }
 });
 
 window.addEventListener("online", async () => { await refreshRemoteState(); render(); });
