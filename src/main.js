@@ -2,6 +2,7 @@ import "./styles.css";
 import { icons, createElement } from "lucide";
 import { ACTION_LABELS, ACTION_TYPES, BATCH_STATUS, addDays, calculateHistoryStats, formatBatchNumber, getRecommendedAction, validateGravity, validatePh, validatePressure, validateTemperature } from "./domain.js";
 import { loadState, saveState } from "./store.js";
+import { isSupabaseConfigured } from "./supabase.js";
 
 const app = document.querySelector("#app");
 let state = await loadState();
@@ -135,7 +136,7 @@ function historyPage() {
 }
 
 function settingsPage() {
-  shell(`<main class="narrow"><section class="page-heading"><div><p class="eyebrow">Konfigurācija</p><h1>Iestatījumi</h1></div></section><section class="panel"><div class="panel-title"><h2>Operatori</h2><span>PIN autentifikācija tiks pieslēgta ar Supabase</span></div><div class="operator-list">${state.operators.map((operator) => `<label class="operator-row"><input type="radio" name="operator" value="${operator.id}" ${operator.id === state.activeOperatorId ? "checked" : ""}><span class="avatar" style="--avatar:${operator.color}">${operator.name.slice(0, 1).toUpperCase()}</span><strong>${operator.name}</strong></label>`).join("")}<form id="operator-form" class="inline-form"><input name="name" placeholder="Jauna operatora vārds" required><button class="secondary">${icon("UserPlus")} Pievienot</button></form></div></section><section class="panel notice"><h2>${icon("CloudOff")} Lokālais režīms</h2><p>Pašlaik dati droši glabājas šajā ierīcē ar IndexedDB. Kad pievienosim Supabase projekta URL un publisko atslēgu, gaidošie ieraksti tiks sinhronizēti ar kopīgo datubāzi.</p><strong>${state.pendingSync.length} ieraksti gaida sinhronizāciju</strong></section></main>`, "Iestatījumi");
+  shell(`<main class="narrow"><section class="page-heading"><div><p class="eyebrow">Konfigurācija</p><h1>Iestatījumi</h1></div></section><section class="panel"><div class="panel-title"><h2>Operatori</h2><span>PIN autentifikācija tiks pieslēgta ar Supabase</span></div><div class="operator-list">${state.operators.map((operator) => `<label class="operator-row"><input type="radio" name="operator" value="${operator.id}" ${operator.id === state.activeOperatorId ? "checked" : ""}><span class="avatar" style="--avatar:${operator.color}">${operator.name.slice(0, 1).toUpperCase()}</span><strong>${operator.name}</strong></label>`).join("")}<form id="operator-form" class="inline-form"><input name="name" placeholder="Jauna operatora vārds" required><button class="secondary">${icon("UserPlus")} Pievienot</button></form></div></section><section class="panel notice"><h2>${icon(isSupabaseConfigured ? "CloudCog" : "CloudOff")} ${isSupabaseConfigured ? "Supabase pieslēgums konfigurēts" : "Lokālais režīms"}</h2><p>${isSupabaseConfigured ? "Projekta URL un publiskā atslēga ir iestatīti. Līdz datubāzes migrācijas un autorizācijas aktivizēšanai dati turpina droši glabāties šajā ierīcē." : "Dati droši glabājas šajā ierīcē ar IndexedDB. Pievieno Supabase projekta URL un publisko atslēgu, lai aktivizētu kopīgo datubāzi."}</p><strong>${state.pendingSync.length} ieraksti gaida sinhronizāciju</strong></section></main>`, "Iestatījumi");
 }
 
 function operatorDialog() { route = "settings"; render(); }
