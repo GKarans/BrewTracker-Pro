@@ -375,6 +375,7 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("submit", async (event) => {
+  if (event.target.method === "dialog") return;
   event.preventDefault();
   if (event.target.id === "auth-form") { await submitAuth(event.target); return; }
   if (event.target.id === "onboarding-form") { await submitOnboarding(event.target); return; }
