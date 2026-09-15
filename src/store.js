@@ -10,6 +10,7 @@ const defaultState = {
   ],
   activeOperatorId: null,
   beerTypes: [],
+  fermenters: [],
   batches: [],
   pendingSync: [],
 };

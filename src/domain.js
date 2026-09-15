@@ -19,6 +19,28 @@ export const ACTION_LABELS = Object.freeze({
   finish: "Pildīšana",
 });
 
+export const FERMENTERS = Object.freeze([
+  ...Array.from({ length: 9 }, (_, index) => ({ number: index + 1, name: `Tvertne ${index + 1}`, capacityTons: 4, type: "fermenter" })),
+  { number: 10, name: "Tvertne 10", capacityTons: 1, type: "fermenter" },
+  { number: 11, name: "Tvertne 11", capacityTons: 8, type: "fermenter" },
+  { number: 12, name: "Tvertne 12", capacityTons: 8, type: "fermenter" },
+  { number: 13, name: "Dzidra", capacityTons: 4, type: "brite" },
+]);
+
+export function getFermenter(number) {
+  return FERMENTERS.find((item) => item.number === Number(number));
+}
+
+export function requiredPackagingRuns(volumeTons) {
+  return Math.ceil(Number(volumeTons) / 4);
+}
+
+export function completedPackagingVolume(batch) {
+  return (batch.packagingRuns || [])
+    .filter((run) => run.status === "packaged")
+    .reduce((total, run) => total + Number(run.volumeTons), 0);
+}
+
 export function formatBatchNumber(year, sequence, fermenterNumber) {
   const shortYear = String(year).slice(-2);
   if (!Number.isInteger(sequence) || sequence < 1 || sequence > 999) {
@@ -107,7 +129,9 @@ export function getRecommendedAction(batch) {
     return { type: ACTION_TYPES.COOL, label: "Iestati temperatūru uz 0 °C", tone: "urgent" };
   }
   if (completed.has(ACTION_TYPES.COOL) && latest.gravity <= batch.fgTarget) {
-    return { type: ACTION_TYPES.FINISH, label: "Pārbaudi gatavību pildīšanai", tone: "ready" };
+    const activeRun = (batch.packagingRuns || []).find((run) => run.status === "filtered");
+    if (activeRun) return { type: "package", label: "Sapildi alu no Dzidras", tone: "urgent" };
+    if (completedPackagingVolume(batch) < Number(batch.volumeTons)) return { type: "filter", label: "Filtrē nākamo daļu uz Dzidru", tone: "ready" };
   }
   return { type: "wait", label: "Turpini fermentāciju un veic mērījumu", tone: "normal" };
 }

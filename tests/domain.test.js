@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BATCH_STATUS, calculateHistoryStats, formatBatchNumber, getRecommendedAction, validateGravity } from "../src/domain.js";
+import { BATCH_STATUS, calculateHistoryStats, completedPackagingVolume, formatBatchNumber, getFermenter, getRecommendedAction, requiredPackagingRuns, validateGravity } from "../src/domain.js";
 
 describe("partijas numurs", () => {
   it("apvieno divciparu gadu, kārtas numuru un tvertni", () => {
@@ -25,5 +25,18 @@ describe("vēsturiskā prognoze", () => {
   it("aprēķina vidējo dienu skaitu", () => {
     const batches = [{ beerTypeId: "a", status: BATCH_STATUS.FINISHED, brewDate: "2026-08-01", actions: [{ type: "cool", performedAt: "2026-08-11T10:00:00" }] }, { beerTypeId: "a", status: BATCH_STATUS.FINISHED, brewDate: "2026-09-01", actions: [{ type: "cool", performedAt: "2026-09-13T10:00:00" }] }];
     expect(calculateHistoryStats(batches, "a").cool.averageDays).toBe(11);
+  });
+});
+
+describe("tvertnes un pildīšana", () => {
+  it("izmanto pareizās tvertņu ietilpības", () => {
+    expect(getFermenter(1).capacityTons).toBe(4);
+    expect(getFermenter(10).capacityTons).toBe(1);
+    expect(getFermenter(11).capacityTons).toBe(8);
+    expect(getFermenter(13)).toMatchObject({ name: "Dzidra", capacityTons: 4, type: "brite" });
+  });
+  it("8 tonnu partijai paredz divus pildīšanas ciklus", () => {
+    expect(requiredPackagingRuns(8)).toBe(2);
+    expect(completedPackagingVolume({ packagingRuns: [{ status: "packaged", volumeTons: 4 }, { status: "filtered", volumeTons: 4 }] })).toBe(4);
   });
 });

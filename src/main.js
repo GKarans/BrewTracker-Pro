@@ -1,8 +1,9 @@
 import "./styles.css";
 import { icons, createElement } from "lucide";
-import { ACTION_LABELS, ACTION_TYPES, BATCH_STATUS, addDays, calculateHistoryStats, formatBatchNumber, getRecommendedAction, validateGravity, validatePh, validatePressure, validateTemperature } from "./domain.js";
+import { ACTION_LABELS, ACTION_TYPES, BATCH_STATUS, FERMENTERS, addDays, calculateHistoryStats, completedPackagingVolume, formatBatchNumber, getFermenter, getRecommendedAction, requiredPackagingRuns, validateGravity, validatePh, validatePressure, validateTemperature } from "./domain.js";
 import { loadState, saveState } from "./store.js";
 import { isSupabaseConfigured, supabase } from "./supabase.js";
+import { fetchRemoteState, syncEvent } from "./sync.js";
 
 const app = document.querySelector("#app");
 let state = await loadState();
@@ -66,6 +67,7 @@ async function submitOnboarding(form) {
   operatorUnlocked = true;
   sessionStorage.setItem("brewtracker-operator-id", result.operator_id);
   state = await saveState(state);
+  await refreshRemoteState();
   render();
 }
 
@@ -79,7 +81,39 @@ async function submitOperatorUnlock(form) {
   operatorUnlocked = true;
   sessionStorage.setItem("brewtracker-operator-id", data.operatorId);
   state = await saveState(state);
+  await refreshRemoteState();
   render();
+}
+
+async function refreshRemoteState() {
+  if (!navigator.onLine || !brewery || !operatorUnlocked) return;
+  try {
+    for (const event of [...state.pendingSync]) {
+      await syncEvent(state, event, brewery.id);
+      state.pendingSync = state.pendingSync.filter((item) => item.id !== event.id);
+    }
+    const operatorId = state.activeOperatorId;
+    const operators = state.operators;
+    state = await fetchRemoteState(state, brewery.id);
+    state.operators = operators;
+    state.activeOperatorId = operatorId;
+    state = await saveState(state);
+  } catch (error) {
+    console.error("Supabase synchronization failed", error);
+  }
+}
+
+async function saveAndSync(event) {
+  state = await saveState(state, event);
+  if (!navigator.onLine || !brewery || !operatorUnlocked) return;
+  const queued = state.pendingSync.at(-1);
+  try {
+    await syncEvent(state, queued, brewery.id);
+    state.pendingSync = state.pendingSync.filter((item) => item.id !== queued.id);
+    state = await saveState(state);
+  } catch (error) {
+    console.error("Change queued for synchronization", error);
+  }
 }
 
 async function submitAuth(form) {
@@ -108,6 +142,7 @@ async function submitAuth(form) {
 }
 
 function activeBatches() { return state.batches.filter((batch) => batch.status !== BATCH_STATUS.FINISHED); }
+function activePackagingRun() { return state.batches.flatMap((batch) => (batch.packagingRuns || []).map((run) => ({ ...run, batch }))).find((item) => item.status === "filtered"); }
 function currentOperator() { return state.operators.find((operator) => operator.id === state.activeOperatorId) || state.operators[0]; }
 function today() { return new Date().toISOString().slice(0, 10); }
 function formatDate(value) { return new Intl.DateTimeFormat("lv-LV", { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(`${value.slice(0, 10)}T00:00:00`)); }
@@ -118,12 +153,20 @@ function shell(content, title = "BrewTracker") {
 
 function dashboard() {
   const batches = activeBatches();
-  shell(`<main><section class="page-heading"><div><p class="eyebrow">Fermentācijas pārskats</p><h1>Kas jādara šodien?</h1></div><button class="primary" data-action="new-batch">${icon("Plus")} Jauna partija</button></section><section class="summary"><article><strong>${batches.length}</strong><span>aktīvas partijas</span></article><article><strong>${13 - batches.length}</strong><span>brīvas tvertnes</span></article><article><strong>${batches.filter((batch) => getRecommendedAction(batch).tone === "urgent").length}</strong><span>steidzamas darbības</span></article></section><section class="tank-grid">${Array.from({ length: 13 }, (_, index) => tankCard(index + 1)).join("")}</section></main>`, "BrewTracker Pro");
+  shell(`<main><section class="page-heading"><div><p class="eyebrow">Fermentācijas pārskats</p><h1>Kas jādara šodien?</h1></div><button class="primary" data-action="new-batch">${icon("Plus")} Jauna partija</button></section><section class="summary"><article><strong>${batches.length}</strong><span>aktīvas partijas</span></article><article><strong>${12 - batches.length}</strong><span>brīvas fermentācijas tvertnes</span></article><article><strong>${batches.filter((batch) => getRecommendedAction(batch).tone === "urgent").length}</strong><span>steidzamas darbības</span></article></section><section class="tank-grid">${FERMENTERS.map((tank) => tankCard(tank.number)).join("")}</section></main>`, "BrewTracker Pro");
 }
 
 function tankCard(number) {
+  const vessel = getFermenter(number);
+  if (vessel.type === "brite") {
+    const activeRun = activePackagingRun();
+    const beer = activeRun && state.beerTypes.find((item) => item.id === activeRun.batch.beerTypeId);
+    return activeRun
+      ? `<article class="tank-card brite occupied" data-open-batch="${activeRun.batch.id}"><div class="tank-number">D</div><div class="tank-main"><div class="card-top"><span class="batch-no">DZIDRA · ${activeRun.volumeTons} t</span><span class="days">Cikls ${activeRun.runNumber}</span></div><h2>${beer?.name || "Alus"}</h2><p>Izfiltrēts, gaida pildīšanu</p><div class="recommendation urgent">${icon("PackageCheck", 18)} Sapildīt no Dzidras</div></div>${icon("ChevronRight")}</article>`
+      : `<article class="tank-card brite empty"><div class="tank-number">D</div><div><h2>Dzidra</h2><p>4 t Brite Tank · brīva</p></div></article>`;
+  }
   const batch = activeBatches().find((item) => item.fermenterNumber === number);
-  if (!batch) return `<article class="tank-card empty"><div class="tank-number">${number}</div><div><h2>Brīva tvertne</h2><p>Gatava jaunai partijai</p></div><button data-action="new-batch" data-tank="${number}">${icon("Plus")}</button></article>`;
+  if (!batch) return `<article class="tank-card empty"><div class="tank-number">${number}</div><div><h2>Brīva tvertne</h2><p>Kapacitāte ${vessel.capacityTons} t</p></div><button data-action="new-batch" data-tank="${number}">${icon("Plus")}</button></article>`;
   const beer = state.beerTypes.find((item) => item.id === batch.beerTypeId);
   const latest = batch.measurements.at(-1);
   const recommendation = getRecommendedAction(batch);
@@ -134,7 +177,7 @@ function newBatchForm(tank = "") {
   const currentYear = new Date().getFullYear();
   const existingThisYear = state.batches.filter((batch) => batch.year === currentYear);
   const nextSequence = existingThisYear.length ? Math.max(...existingThisYear.map((batch) => batch.sequence)) + 1 : 1;
-  shell(`<main class="narrow"><button class="text-button" data-route="dashboard">${icon("ArrowLeft")} Atpakaļ</button><section class="page-heading"><div><p class="eyebrow">Jauna fermentācija</p><h1>Izveidot partiju</h1></div></section><form id="batch-form" class="form-card"><div class="field full"><label>Alus nosaukums</label><input name="beerName" list="beer-types" required autocomplete="off"><datalist id="beer-types">${state.beerTypes.map((beer) => `<option value="${beer.name}">`).join("")}</datalist><small>Esošam nosaukumam tiks izmantoti saglabātie sliekšņi.</small></div><div class="field"><label>Tilpums, tonnas</label><input name="volumeTons" type="number" min="0.1" step="0.1" required></div><div class="field"><label>Vārīšanas datums</label><input name="brewDate" type="date" value="${today()}" required></div><div class="field"><label>Kārtas numurs gadā</label><input name="sequence" type="number" min="1" max="999" value="${nextSequence}" required></div><div class="field"><label>Tvertne</label><select name="fermenterNumber" required><option value="">Izvēlies</option>${Array.from({ length: 13 }, (_, i) => i + 1).map((number) => `<option value="${number}" ${String(number) === String(tank) ? "selected" : ""} ${activeBatches().some((batch) => batch.fermenterNumber === number) ? "disabled" : ""}>Tvertne ${number}${activeBatches().some((batch) => batch.fermenterNumber === number) ? " — aizņemta" : ""}</option>`).join("")}</select></div><hr><h2 class="full">Procesa sliekšņi</h2><div class="field"><label>Sākotnējais blīvums (OG)</label><input name="ogTarget" inputmode="numeric" placeholder="1056" required></div><div class="field"><label>Gala blīvums (FG)</label><input name="fgTarget" inputmode="numeric" placeholder="1012" required></div><div class="field"><label>Vārstu aizgriezt pie</label><input name="spundGravity" inputmode="numeric" placeholder="1026" required></div><div class="field"><label>Dzesēt uz 0 °C pie</label><input name="coolingGravity" inputmode="numeric" placeholder="1018" required></div><label class="check full"><input name="hasDryHop" type="checkbox"><span>Šim alum ir Dry Hop</span></label><div class="field" id="dry-hop-field" hidden><label>Dry Hop pie blīvuma</label><input name="dryHopGravity" inputmode="numeric" placeholder="1022"></div><div class="field"><label>Mērķa CO₂, vol</label><input name="co2Target" type="number" min="1" max="4" step="0.1" value="2.4" required></div><div class="form-error full" id="form-error"></div><button class="primary full" type="submit">Izveidot partiju</button></form></main>`, "Jauna partija");
+  shell(`<main class="narrow"><button class="text-button" data-route="dashboard">${icon("ArrowLeft")} Atpakaļ</button><section class="page-heading"><div><p class="eyebrow">Jauna fermentācija</p><h1>Izveidot partiju</h1></div></section><form id="batch-form" class="form-card"><div class="field full"><label>Alus nosaukums</label><input name="beerName" list="beer-types" required autocomplete="off"><datalist id="beer-types">${state.beerTypes.map((beer) => `<option value="${beer.name}">`).join("")}</datalist><small>Esošam nosaukumam tiks izmantoti saglabātie sliekšņi.</small></div><div class="field"><label>Tilpums, tonnas</label><input name="volumeTons" type="number" min="0.1" step="0.1" required></div><div class="field"><label>Vārīšanas datums</label><input name="brewDate" type="date" value="${today()}" required></div><div class="field"><label>Kārtas numurs gadā</label><input name="sequence" type="number" min="1" max="999" value="${nextSequence}" required></div><div class="field"><label>Fermentācijas tvertne</label><select name="fermenterNumber" required><option value="">Izvēlies</option>${FERMENTERS.filter((item) => item.type === "fermenter").map((item) => `<option value="${item.number}" ${String(item.number) === String(tank) ? "selected" : ""} ${activeBatches().some((batch) => batch.fermenterNumber === item.number) ? "disabled" : ""}>${item.name} · max ${item.capacityTons} t${activeBatches().some((batch) => batch.fermenterNumber === item.number) ? " — aizņemta" : ""}</option>`).join("")}</select></div><hr><h2 class="full">Procesa sliekšņi</h2><div class="field"><label>Sākotnējais blīvums (OG)</label><input name="ogTarget" inputmode="numeric" placeholder="1056" required></div><div class="field"><label>Gala blīvums (FG)</label><input name="fgTarget" inputmode="numeric" placeholder="1012" required></div><div class="field"><label>Vārstu aizgriezt pie</label><input name="spundGravity" inputmode="numeric" placeholder="1026" required></div><div class="field"><label>Dzesēt uz 0 °C pie</label><input name="coolingGravity" inputmode="numeric" placeholder="1018" required></div><label class="check full"><input name="hasDryHop" type="checkbox"><span>Šim alum ir Dry Hop</span></label><div class="field" id="dry-hop-field" hidden><label>Dry Hop pie blīvuma</label><input name="dryHopGravity" inputmode="numeric" placeholder="1022"></div><div class="field"><label>Mērķa CO₂, vol</label><input name="co2Target" type="number" min="1" max="4" step="0.1" value="2.4" required></div><div class="form-error full" id="form-error"></div><button class="primary full" type="submit">Izveidot partiju</button></form></main>`, "Jauna partija");
   const checkbox = document.querySelector('[name="hasDryHop"]');
   const beerInput = document.querySelector('[name="beerName"]');
   checkbox.addEventListener("change", () => document.querySelector("#dry-hop-field").hidden = !checkbox.checked);
@@ -152,6 +195,9 @@ async function submitBatch(form) {
     const year = Number(data.brewDate.slice(0, 4));
     const sequence = Number(data.sequence);
     const fermenterNumber = Number(data.fermenterNumber);
+    const vessel = getFermenter(fermenterNumber);
+    if (!vessel || vessel.type !== "fermenter") throw new Error("Izvēlies fermentācijas tvertni no 1 līdz 12.");
+    if (Number(data.volumeTons) > vessel.capacityTons) throw new Error(`${vessel.name} maksimālā ietilpība ir ${vessel.capacityTons} t.`);
     const batchNumber = formatBatchNumber(year, sequence, fermenterNumber);
     if (state.batches.some((batch) => batch.batchNumber === batchNumber)) throw new Error(`Partija ${batchNumber} jau eksistē.`);
     if (activeBatches().some((batch) => batch.fermenterNumber === fermenterNumber)) throw new Error(`Tvertne ${fermenterNumber} jau ir aizņemta.`);
@@ -159,9 +205,9 @@ async function submitBatch(form) {
     const targets = { ogTarget: validateGravity(data.ogTarget), fgTarget: validateGravity(data.fgTarget), spundGravity: validateGravity(data.spundGravity), coolingGravity: validateGravity(data.coolingGravity), hasDryHop: data.hasDryHop === "on", dryHopGravity: data.hasDryHop === "on" ? validateGravity(data.dryHopGravity) : null, co2Target: Number(data.co2Target) };
     if (!beer) { beer = { id: crypto.randomUUID(), name: data.beerName.trim(), ...targets }; state.beerTypes.push(beer); }
     else Object.assign(beer, targets);
-    const batch = { id: crypto.randomUUID(), batchNumber, year, sequence, fermenterNumber, beerTypeId: beer.id, volumeTons: Number(data.volumeTons), brewDate: data.brewDate, status: BATCH_STATUS.ACTIVE, ...targets, measurements: [], actions: [], createdAt: new Date().toISOString(), createdBy: currentOperator().id };
+    const batch = { id: crypto.randomUUID(), batchNumber, year, sequence, fermenterNumber, beerTypeId: beer.id, volumeTons: Number(data.volumeTons), brewDate: data.brewDate, status: BATCH_STATUS.ACTIVE, ...targets, measurements: [], actions: [], packagingRuns: [], createdAt: new Date().toISOString(), createdBy: currentOperator().id };
     state.batches.push(batch);
-    state = await saveState(state, { entity: "batch", operation: "create", entityId: batch.id });
+    await saveAndSync({ entity: "batch", operation: "create", entityId: batch.id });
     selectedBatchId = batch.id; route = "batch"; render();
   } catch (error) { document.querySelector("#form-error").textContent = error.message; }
 }
@@ -172,7 +218,17 @@ function batchDetail() {
   const beer = state.beerTypes.find((item) => item.id === batch.beerTypeId);
   const recommendation = getRecommendedAction(batch);
   const stats = calculateHistoryStats(state.batches, batch.beerTypeId);
-  shell(`<main class="narrow"><button class="text-button" data-route="dashboard">${icon("ArrowLeft")} Visas tvertnes</button><section class="batch-hero"><div><span class="batch-no">#${batch.batchNumber} · Tvertne ${batch.fermenterNumber}</span><h1>${beer.name} <small>${batch.volumeTons} t</small></h1><p>Sākts ${formatDate(batch.brewDate)}</p></div><span class="status">${batch.status === BATCH_STATUS.FINISHED ? "Pabeigts" : "Aktīvs"}</span></section><section class="action-banner ${recommendation.tone}"><div>${icon("Sparkles", 24)}<span><small>Ieteicamā darbība</small><strong>${recommendation.label}</strong></span></div></section>${predictionPanel(batch, stats)}<section class="detail-grid"><article class="panel"><div class="panel-title"><h2>Jauns mērījums</h2><span>Var saglabāt bez interneta</span></div><form id="measurement-form" class="measurement-form"><div class="field"><label>Blīvums</label><input name="gravity" inputmode="numeric" placeholder="1054" required></div><div class="field"><label>pH</label><input name="ph" type="number" min="0" max="14" step="0.01" placeholder="4.20" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" min="-5" max="50" step="0.1" placeholder="19.5" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" min="0" max="5" step="0.01" placeholder="0.80"></div><div class="field full"><label>Piezīme</label><input name="note" placeholder="Neobligāta piezīme"></div><div class="form-error full" id="measurement-error"></div><button class="primary full">${icon("Save")} Saglabāt mērījumu</button></form></article><article class="panel"><div class="panel-title"><h2>Darbības</h2></div><div class="action-list">${[ACTION_TYPES.SPUND, ...(batch.hasDryHop ? [ACTION_TYPES.DRY_HOP] : []), ACTION_TYPES.COOL, ACTION_TYPES.FINISH].map((type) => actionButton(batch, type)).join("")}</div></article></section><section class="panel"><div class="panel-title"><h2>Mērījumu vēsture</h2><span>${batch.measurements.length} ieraksti</span></div>${measurementTable(batch)}</section></main>`, beer.name);
+  shell(`<main class="narrow"><button class="text-button" data-route="dashboard">${icon("ArrowLeft")} Visas tvertnes</button><section class="batch-hero"><div><span class="batch-no">#${batch.batchNumber} · Tvertne ${batch.fermenterNumber}</span><h1>${beer.name} <small>${batch.volumeTons} t</small></h1><p>Sākts ${formatDate(batch.brewDate)}</p></div><span class="status">${batch.status === BATCH_STATUS.FINISHED ? "Pabeigts" : "Aktīvs"}</span></section><section class="action-banner ${recommendation.tone}"><div>${icon("Sparkles", 24)}<span><small>Ieteicamā darbība</small><strong>${recommendation.label}</strong></span></div></section>${predictionPanel(batch, stats)}<section class="detail-grid"><article class="panel"><div class="panel-title"><h2>Jauns mērījums</h2><span>Var saglabāt bez interneta</span></div><form id="measurement-form" class="measurement-form"><div class="field"><label>Blīvums</label><input name="gravity" inputmode="numeric" placeholder="1054" required></div><div class="field"><label>pH</label><input name="ph" type="number" min="0" max="14" step="0.01" placeholder="4.20" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" min="-5" max="50" step="0.1" placeholder="19.5" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" min="0" max="5" step="0.01" placeholder="0.80"></div><div class="field full"><label>Piezīme</label><input name="note" placeholder="Neobligāta piezīme"></div><div class="form-error full" id="measurement-error"></div><button class="primary full">${icon("Save")} Saglabāt mērījumu</button></form></article><article class="panel"><div class="panel-title"><h2>Fermentācijas darbības</h2></div><div class="action-list">${[ACTION_TYPES.SPUND, ...(batch.hasDryHop ? [ACTION_TYPES.DRY_HOP] : []), ACTION_TYPES.COOL].map((type) => actionButton(batch, type)).join("")}</div></article></section>${packagingPanel(batch)}<section class="panel"><div class="panel-title"><h2>Mērījumu vēsture</h2><span>${batch.measurements.length} ieraksti</span></div>${measurementTable(batch)}</section></main>`, beer.name);
+}
+
+function packagingPanel(batch) {
+  const runs = batch.packagingRuns || [];
+  const required = requiredPackagingRuns(batch.volumeTons);
+  const packaged = completedPackagingVolume(batch);
+  const coolingDone = batch.actions.some((action) => action.type === ACTION_TYPES.COOL);
+  const briteBusy = activePackagingRun();
+  const canFilter = coolingDone && runs.length < required && !briteBusy && batch.status !== BATCH_STATUS.FINISHED;
+  return `<section class="panel packaging-panel"><div class="panel-title"><div><h2>Filtrēšana un pildīšana</h2><p>${packaged} no ${batch.volumeTons} t sapildītas · ${runs.length} no ${required} cikliem</p></div>${canFilter ? `<button class="primary" data-filter-to-brite>${icon("ArrowRightLeft")} Filtrēt uz Dzidru</button>` : ""}</div><div class="packaging-runs">${runs.length ? runs.map((run) => `<article class="packaging-run ${run.status}"><div><span>Cikls ${run.runNumber}</span><strong>${run.volumeTons} t · ${run.status === "filtered" ? "Dzidrā" : "Sapildīts"}</strong><small>${formatDate(run.filteredAt)}${run.packagedAt ? ` → ${formatDate(run.packagedAt)}` : ""}</small></div>${run.status === "filtered" ? `<button class="primary" data-finish-packaging="${run.id}">${icon("PackageCheck")} Sapildīts</button>` : icon("CircleCheckBig", 28)}</article>`).join("") : `<div class="empty-state compact"><p>${coolingDone ? (briteBusy ? "Dzidra pašlaik ir aizņemta ar citu partiju." : "Alus gatavs filtrēšanai uz Dzidru.") : "Pirms filtrēšanas pabeidz dzesēšanu uz 0 °C."}</p></div>`}</div></section>`;
 }
 
 function predictionPanel(batch, stats) {
@@ -196,7 +252,7 @@ async function submitMeasurement(form) {
     const batch = state.batches.find((item) => item.id === selectedBatchId);
     const measurement = { id: crypto.randomUUID(), measuredAt: new Date().toISOString(), gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), note: data.note.trim(), operatorId: currentOperator().id };
     batch.measurements.push(measurement);
-    state = await saveState(state, { entity: "measurement", operation: "create", entityId: measurement.id });
+    await saveAndSync({ entity: "measurement", operation: "create", entityId: measurement.id });
     render();
   } catch (error) { document.querySelector("#measurement-error").textContent = error.message; }
 }
@@ -210,6 +266,60 @@ function actionDialog(type) {
   dialog.addEventListener("close", async () => { if (dialog.returnValue === "default") await completeAction(type, dialog.querySelector("form")); dialog.remove(); });
 }
 
+function filterToBriteDialog() {
+  const batch = state.batches.find((item) => item.id === selectedBatchId);
+  const latest = batch.measurements.at(-1);
+  const remaining = Number(batch.volumeTons) - completedPackagingVolume(batch);
+  const volume = Math.min(4, remaining);
+  const dialog = document.createElement("dialog");
+  dialog.innerHTML = `<form method="dialog" id="filter-form" class="dialog-card"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow">Dzidra · Brite Tank</p><h2>Filtrēt uz Dzidru</h2><p>Fermentācijas tvertne paliks aizņemta, līdz šis alus būs sapildīts pilnā apjomā.</p><div class="measurement-form"><div class="field"><label>Filtrējamais apjoms, t</label><input name="volumeTons" type="number" min="0.1" max="4" step="0.1" value="${volume}" required></div><div class="field"><label>Blīvums</label><input name="gravity" value="${latest?.gravity ?? ""}" required></div><div class="field"><label>pH</label><input name="ph" type="number" step="0.01" value="${latest?.ph ?? ""}" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" step="0.1" value="${latest?.temperature ?? ""}" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" step="0.01" value="${latest?.pressure ?? ""}"></div><div class="form-error full" id="filter-error"></div><button class="primary full" value="default">Apstiprināt filtrēšanu</button></div></form>`;
+  document.body.append(dialog); dialog.showModal();
+  dialog.addEventListener("close", async () => { if (dialog.returnValue === "default") await createPackagingRun(dialog.querySelector("form")); dialog.remove(); });
+}
+
+async function createPackagingRun(form) {
+  try {
+    const data = Object.fromEntries(new FormData(form));
+    const batch = state.batches.find((item) => item.id === selectedBatchId);
+    if (activePackagingRun()) throw new Error("Dzidra pašlaik ir aizņemta.");
+    const remaining = Number(batch.volumeTons) - completedPackagingVolume(batch);
+    const volumeTons = Number(data.volumeTons);
+    if (volumeTons <= 0 || volumeTons > 4 || volumeTons > remaining) throw new Error(`Atļauts filtrēt ne vairāk kā ${Math.min(4, remaining)} t.`);
+    const run = { id: crypto.randomUUID(), clientId: crypto.randomUUID(), runNumber: (batch.packagingRuns || []).length + 1, volumeTons, status: "filtered", filteredAt: new Date().toISOString(), packagedAt: null, gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), co2Vol: null, operatorId: currentOperator().id };
+    batch.packagingRuns ||= []; batch.packagingRuns.push(run);
+    await saveAndSync({ entity: "packagingRun", operation: "create", entityId: run.id }); render();
+  } catch (error) { alert(error.message); }
+}
+
+function finishPackagingDialog(runId) {
+  const batch = state.batches.find((item) => item.id === selectedBatchId);
+  const run = batch.packagingRuns.find((item) => item.id === runId);
+  const dialog = document.createElement("dialog");
+  dialog.innerHTML = `<form method="dialog" class="dialog-card"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow">Pildīšana · cikls ${run.runNumber}</p><h2>Apstiprināt pildīšanu</h2><p>Pēc apstiprināšanas Dzidra būs brīva nākamajam filtrēšanas ciklam.</p><div class="measurement-form"><div class="field"><label>Gala blīvums</label><input name="gravity" value="${run.gravity}" required></div><div class="field"><label>pH</label><input name="ph" type="number" step="0.01" value="${run.ph}" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" step="0.1" value="${run.temperature}" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" step="0.01" value="${run.pressure ?? ""}"></div><div class="field full"><label>CO₂, vol</label><input name="co2Vol" type="number" min="0" max="5" step="0.1" value="${batch.co2Target}" required></div><button class="primary full" value="default">Sapildīts</button></div></form>`;
+  document.body.append(dialog); dialog.showModal();
+  dialog.addEventListener("close", async () => { if (dialog.returnValue === "default") await finishPackagingRun(runId, dialog.querySelector("form")); dialog.remove(); });
+}
+
+async function finishPackagingRun(runId, form) {
+  try {
+    const data = Object.fromEntries(new FormData(form));
+    const batch = state.batches.find((item) => item.id === selectedBatchId);
+    const run = batch.packagingRuns.find((item) => item.id === runId);
+    Object.assign(run, { status: "packaged", packagedAt: new Date().toISOString(), gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), co2Vol: Number(data.co2Vol), operatorId: currentOperator().id });
+    if (completedPackagingVolume(batch) >= Number(batch.volumeTons)) {
+      batch.status = BATCH_STATUS.FINISHED;
+      batch.finishedAt = run.packagedAt;
+      batch.actions = batch.actions.filter((item) => item.type !== ACTION_TYPES.FINISH);
+      batch.actions.push({ id: crypto.randomUUID(), type: ACTION_TYPES.FINISH, performedAt: run.packagedAt, gravity: run.gravity, ph: run.ph, temperature: run.temperature, pressure: run.pressure, operatorId: run.operatorId });
+    }
+    await saveAndSync({ entity: "packagingRun", operation: "update", entityId: run.id }); render();
+    if (batch.status === BATCH_STATUS.FINISHED) {
+      await saveAndSync({ entity: "action", operation: "create", entityId: batch.actions.find((item) => item.type === ACTION_TYPES.FINISH).id });
+      await saveAndSync({ entity: "batch", operation: "update", entityId: batch.id });
+    }
+  } catch (error) { alert(error.message); }
+}
+
 async function completeAction(type, form) {
   try {
     const data = Object.fromEntries(new FormData(form));
@@ -219,8 +329,11 @@ async function completeAction(type, form) {
     if (type === ACTION_TYPES.DRY_HOP) batch.status = BATCH_STATUS.DRY_HOP;
     if (type === ACTION_TYPES.COOL) batch.status = BATCH_STATUS.COOLING;
     if (type === ACTION_TYPES.FINISH) batch.status = BATCH_STATUS.FINISHED;
-    batch.measurements.push({ id: crypto.randomUUID(), measuredAt: action.performedAt, gravity: action.gravity, ph: action.ph, temperature: action.temperature, pressure: action.pressure, note: ACTION_LABELS[type], operatorId: action.operatorId });
-    state = await saveState(state, { entity: "action", operation: "create", entityId: action.id }); render();
+    const actionMeasurement = { id: crypto.randomUUID(), measuredAt: action.performedAt, gravity: action.gravity, ph: action.ph, temperature: action.temperature, pressure: action.pressure, note: ACTION_LABELS[type], operatorId: action.operatorId };
+    batch.measurements.push(actionMeasurement);
+    await saveAndSync({ entity: "action", operation: "create", entityId: action.id }); render();
+    await saveAndSync({ entity: "measurement", operation: "create", entityId: actionMeasurement.id });
+    await saveAndSync({ entity: "batch", operation: "update", entityId: batch.id });
   } catch (error) { alert(error.message); }
 }
 
@@ -230,10 +343,10 @@ function historyPage() {
 }
 
 function settingsPage() {
-  shell(`<main class="narrow"><section class="page-heading"><div><p class="eyebrow">Konfigurācija</p><h1>Iestatījumi</h1></div></section><section class="panel"><div class="panel-title"><h2>Operatori</h2><span>PIN autentifikācija tiks pieslēgta ar Supabase</span></div><div class="operator-list">${state.operators.map((operator) => `<label class="operator-row"><input type="radio" name="operator" value="${operator.id}" ${operator.id === state.activeOperatorId ? "checked" : ""}><span class="avatar" style="--avatar:${operator.color}">${operator.name.slice(0, 1).toUpperCase()}</span><strong>${operator.name}</strong></label>`).join("")}<form id="operator-form" class="inline-form"><input name="name" placeholder="Jauna operatora vārds" required><button class="secondary">${icon("UserPlus")} Pievienot</button></form></div></section><section class="panel notice"><h2>${icon(isSupabaseConfigured ? "CloudCog" : "CloudOff")} ${isSupabaseConfigured ? "Supabase pieslēgums konfigurēts" : "Lokālais režīms"}</h2><p>${isSupabaseConfigured ? "Projekta URL un publiskā atslēga ir iestatīti. Līdz datubāzes migrācijas un autorizācijas aktivizēšanai dati turpina droši glabāties šajā ierīcē." : "Dati droši glabājas šajā ierīcē ar IndexedDB. Pievieno Supabase projekta URL un publisko atslēgu, lai aktivizētu kopīgo datubāzi."}</p><strong>${state.pendingSync.length} ieraksti gaida sinhronizāciju</strong></section></main>`, "Iestatījumi");
+  shell(`<main class="narrow"><section class="page-heading"><div><p class="eyebrow">Konfigurācija</p><h1>Iestatījumi</h1></div></section><section class="panel"><div class="panel-title"><h2>Operatori</h2><span>Katram operatoram ir savs PIN</span></div><div class="operator-list">${state.operators.map((operator) => `<div class="operator-row"><span class="avatar">${operator.name.slice(0, 1).toUpperCase()}</span><strong>${operator.name}</strong>${operator.id === state.activeOperatorId ? `<span class="current-label">Aktīvs</span>` : ""}</div>`).join("")}<form id="operator-form" class="inline-form"><input name="name" placeholder="Jauna operatora vārds" required><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" placeholder="PIN (4–8 cipari)" required><button class="secondary">${icon("UserPlus")} Pievienot</button></form></div></section><section class="panel notice"><h2>${icon(isSupabaseConfigured ? "CloudCog" : "CloudOff")} ${isSupabaseConfigured ? "Supabase sinhronizācija aktīva" : "Lokālais režīms"}</h2><p>${isSupabaseConfigured ? "Tiešsaistē izmaiņas tiek nosūtītas uz kopīgo datubāzi. Bezsaistē tās paliek šajā ierīcē un tiks nosūtītas pēc interneta atjaunošanās." : "Dati droši glabājas šajā ierīcē ar IndexedDB."}</p><strong>${state.pendingSync.length} ieraksti gaida sinhronizāciju</strong></section></main>`, "Iestatījumi");
 }
 
-function operatorDialog() { route = "settings"; render(); }
+function operatorDialog() { operatorUnlocked = false; operatorUnlockPage(); }
 
 function render() {
   if (route === "dashboard") dashboard();
@@ -255,6 +368,9 @@ document.addEventListener("click", (event) => {
   if (batchButton) { selectedBatchId = batchButton.dataset.openBatch; route = "batch"; render(); return; }
   const actionButton = event.target.closest("[data-batch-action]");
   if (actionButton) { actionDialog(actionButton.dataset.batchAction); return; }
+  if (event.target.closest("[data-filter-to-brite]")) { filterToBriteDialog(); return; }
+  const finishPackagingButton = event.target.closest("[data-finish-packaging]");
+  if (finishPackagingButton) { finishPackagingDialog(finishPackagingButton.dataset.finishPackaging); return; }
   if (event.target.closest('[data-action="operators"]')) operatorDialog();
 });
 
@@ -266,17 +382,14 @@ document.addEventListener("submit", async (event) => {
   if (event.target.id === "batch-form") await submitBatch(event.target);
   if (event.target.id === "measurement-form") await submitMeasurement(event.target);
   if (event.target.id === "operator-form") {
-    const name = new FormData(event.target).get("name").trim();
-    const operator = { id: crypto.randomUUID(), name, color: `hsl(${Math.random() * 360} 65% 48%)` };
-    state.operators.push(operator); state.activeOperatorId = operator.id; state = await saveState(state); render();
+    const data = Object.fromEntries(new FormData(event.target));
+    const { data: operator, error } = await supabase.rpc("create_operator", { operator_name: data.name.trim(), operator_pin: data.pin });
+    if (error) { alert(error.message); return; }
+    state.operators.push(operator); state = await saveState(state); render();
   }
 });
 
-document.addEventListener("change", async (event) => {
-  if (event.target.name === "operator") { state.activeOperatorId = event.target.value; state = await saveState(state); render(); }
-});
-
-window.addEventListener("online", render);
+window.addEventListener("online", async () => { await refreshRemoteState(); render(); });
 window.addEventListener("offline", render);
 
 async function initializeApp() {
