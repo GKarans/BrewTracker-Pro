@@ -1,0 +1,13 @@
+{
+  "name": "BrewTracker Pro",
+  "short_name": "BrewTracker",
+  "description": "Alus fermentācijas procesa asistents",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1712",
+  "theme_color": "#10251d",
+  "lang": "lv",
+  "icons": [
+    { "src": "/icons/brewtracker.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

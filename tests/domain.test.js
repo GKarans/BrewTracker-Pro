@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BATCH_STATUS, calculateHistoryStats, completedPackagingVolume, formatBatchNumber, getFermenter, getRecommendedAction, remainingInFermenter, requiredPackagingRuns, validateGravity } from "../src/domain.js";
+import { BATCH_STATUS, calculateHistoryStats, completedPackagingVolume, formatBatchNumber, getDailyTasks, getFermenter, getRecommendedAction, remainingInFermenter, requiredPackagingRuns, validateGravity } from "../src/domain.js";
 
 describe("partijas numurs", () => {
   it("apvieno divciparu gadu, kārtas numuru un tvertni", () => {
@@ -18,6 +18,14 @@ describe("procesa ieteikumi", () => {
   it("validē blīvuma formātu", () => {
     expect(validateGravity("1056")).toBe(1056);
     expect(() => validateGravity("1.056")).toThrow();
+  });
+  it("prasa dienas mērījumu, ja šodien tāda nav", () => {
+    const batch = { status: BATCH_STATUS.ACTIVE, spundGravity: 1026, hasDryHop: false, coolingGravity: 1018, fgTarget: 1012, actions: [], packagingRuns: [], measurements: [{ gravity: 1040, measuredAt: "2026-11-22T10:00:00" }] };
+    expect(getDailyTasks(batch, new Date("2026-11-23T12:00:00")).some((task) => task.type === "measure")).toBe(true);
+  });
+  it("neprasa otru mērījumu tajā pašā dienā", () => {
+    const batch = { status: BATCH_STATUS.ACTIVE, spundGravity: 1026, hasDryHop: false, coolingGravity: 1018, fgTarget: 1012, actions: [], packagingRuns: [], measurements: [{ gravity: 1040, measuredAt: "2026-11-23T10:00:00" }] };
+    expect(getDailyTasks(batch, new Date("2026-11-23T12:00:00")).some((task) => task.type === "measure")).toBe(false);
   });
 });
 

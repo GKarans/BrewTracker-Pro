@@ -143,3 +143,32 @@ export function getRecommendedAction(batch) {
   }
   return { type: "wait", label: "Turpini fermentāciju un veic mērījumu", tone: "normal" };
 }
+
+export function getDailyTasks(batch, date = new Date()) {
+  if (batch.status === BATCH_STATUS.FINISHED) return [];
+  const dateKey = localDateKey(date);
+  const latest = batch.measurements?.at(-1);
+  const recommendation = getRecommendedAction(batch);
+  const tasks = [];
+
+  if (["urgent", "ready"].includes(recommendation.tone)) {
+    tasks.push({ type: recommendation.type, label: recommendation.label, tone: recommendation.tone });
+  }
+
+  const measuredToday = batch.measurements?.some((measurement) => localDateKey(measurement.measuredAt) === dateKey);
+  if (!measuredToday && recommendation.type !== "package") {
+    tasks.push({
+      type: "measure",
+      label: latest ? "Paņem obligāto dienas mērījumu" : "Ievadi pirmo mērījumu",
+      tone: "urgent",
+    });
+  }
+
+  return tasks;
+}
+
+function localDateKey(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 10);
+}
