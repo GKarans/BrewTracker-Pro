@@ -214,14 +214,48 @@ function showDailyTasks(sendSystemNotification = false) {
 }
 
 async function enableNotifications() {
-  if (!("Notification" in window)) { alert("Šis pārlūks neatbalsta sistēmas paziņojumus."); return; }
+  if (!("Notification" in window) || !("PushManager" in window) || !("serviceWorker" in navigator)) {
+    alert("Šis pārlūks neatbalsta Web Push paziņojumus.");
+    return;
+  }
   const permission = await Notification.requestPermission();
-  if (permission === "granted") {
-    alert("Paziņojumi ieslēgti. Tie tiks parādīti, atverot BrewTracker un ieejot operatora profilā.");
-  } else {
+  if (permission !== "granted") {
     alert("Paziņojumi netika atļauti. Tos vari ieslēgt Chrome vietnes iestatījumos.");
+    render();
+    return;
+  }
+  try {
+    const configResponse = await fetch("/.netlify/functions/push-config");
+    if (!configResponse.ok) throw new Error("Netlify Web Push atslēgas vēl nav konfigurētas.");
+    const { publicKey } = await configResponse.json();
+    const registration = await navigator.serviceWorker.ready;
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey),
+      });
+    }
+    const value = subscription.toJSON();
+    const { error } = await supabase.rpc("register_push_subscription", {
+      subscription_endpoint: value.endpoint,
+      subscription_p256dh: value.keys.p256dh,
+      subscription_auth: value.keys.auth,
+      subscription_user_agent: navigator.userAgent,
+    });
+    if (error) throw error;
+    alert("Web Push ieslēgts šim datoram. Katru rītu ap 07:00 saņemsi paziņojumu, ja būs neizpildīti darbi.");
+  } catch (error) {
+    alert(`Web Push neizdevās ieslēgt: ${error.message}`);
   }
   render();
+}
+
+function urlBase64ToUint8Array(value) {
+  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+  const base64 = (value + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map((character) => character.charCodeAt(0)));
 }
 
 function shell(content, title = "BrewTracker") {

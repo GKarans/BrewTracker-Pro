@@ -27,6 +27,10 @@ describe("procesa ieteikumi", () => {
     const batch = { status: BATCH_STATUS.ACTIVE, spundGravity: 1026, hasDryHop: false, coolingGravity: 1018, fgTarget: 1012, actions: [], packagingRuns: [], measurements: [{ gravity: 1040, measuredAt: "2026-11-23T10:00:00" }] };
     expect(getDailyTasks(batch, new Date("2026-11-23T12:00:00")).some((task) => task.type === "measure")).toBe(false);
   });
+  it("pēc dzesēšanas uzsākšanas vairs neprasa ikdienas mērījumu", () => {
+    const batch = { status: BATCH_STATUS.COOLING, spundGravity: 1026, hasDryHop: false, coolingGravity: 1018, fgTarget: 1012, actions: [{ type: "cool", performedAt: "2026-11-22T10:00:00" }], packagingRuns: [], measurements: [{ gravity: 1012, measuredAt: "2026-11-22T10:00:00" }] };
+    expect(getDailyTasks(batch, new Date("2026-11-23T12:00:00")).some((task) => task.type === "measure")).toBe(false);
+  });
 });
 
 describe("vēsturiskā prognoze", () => {

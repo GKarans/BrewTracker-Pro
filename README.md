@@ -4,7 +4,7 @@ Mobile-first alus fermentācijas procesa asistents. Tas pārvalda 13 tvertnes, u
 
 ## Pašreizējais statuss
 
-Pirmā darbināmā versija darbojas local-first režīmā ar IndexedDB. Mērījumus var ievadīt bez interneta. `supabase/migrations` satur sākotnējo PostgreSQL shēmu; kopīgā autentifikācija un sinhronizācijas transports tiks aktivizēts pēc Supabase projekta izveides.
+Aplikācija sinhronizē datus ar Supabase un saglabā bezsaistes izmaiņas IndexedDB. Tā ir instalējama kā PWA un atbalsta ikdienas Web Push darbu paziņojumus.
 
 ## Palaišana
 
@@ -27,6 +27,16 @@ Build command: `npm run build`
 Publish directory: `dist`
 
 Vides mainīgos kopē no `.env.example`. Frontendā drīkst izmantot tikai Supabase publishable key; service role atslēgu nedrīkst ievietot pārlūka kodā.
+
+### Web Push
+
+1. Supabase SQL Editor izpildi `supabase/migrations/202611230002_push_subscriptions.sql`.
+2. Lokāli izpildi `npm run generate:vapid` un abas izveidotās atslēgas glabā droši.
+3. Netlify vietnes vides mainīgajos pievieno `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` un `VAPID_SUBJECT`.
+4. `SUPABASE_SECRET_KEY` ir tikai servera atslēga bez `VITE_` prefiksa. Tā nedrīkst nonākt GitHub vai pārlūkā.
+5. Pēc deploy aplikācijas Iestatījumos katrā ierīcē nospied “Ieslēgt sistēmas paziņojumus”.
+
+Netlify plānotā funkcija tiek palaista reizi stundā un sūta paziņojumus vienreiz dienā ap 07:00 pēc `Europe/Riga` laika. Pēc dzesēšanas uz 0 °C sākšanas ikdienas mērījumi vairs netiek prasīti; tiek atgādināts tikai par filtrēšanu vai pildīšanu.
 
 ## Partijas numurs
 

@@ -16,10 +16,23 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(fetch(event.request).catch(() => caches.match(event.request).then((cached) => cached || caches.match("/"))));
 });
 
+self.addEventListener("push", (event) => {
+  const payload = event.data?.json() || {};
+  event.waitUntil(self.registration.showNotification(payload.title || "BrewTracker Pro", {
+    body: payload.body || "Aplikācijā ir jauni darbi.",
+    icon: "/icons/brewtracker.svg",
+    badge: "/icons/brewtracker.svg",
+    tag: payload.tag || "brewtracker-daily",
+    requireInteraction: true,
+    data: { url: payload.url || "/" },
+  }));
+});
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
+  const targetUrl = event.notification.data?.url || "/";
   event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
     const existing = clients.find((client) => "focus" in client);
-    return existing ? existing.focus() : self.clients.openWindow("/");
+    return existing ? existing.focus() : self.clients.openWindow(targetUrl);
   }));
 });

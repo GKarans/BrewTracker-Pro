@@ -149,6 +149,7 @@ export function getDailyTasks(batch, date = new Date()) {
   const dateKey = localDateKey(date);
   const latest = batch.measurements?.at(-1);
   const recommendation = getRecommendedAction(batch);
+  const completed = new Set((batch.actions || []).map((action) => action.type));
   const tasks = [];
 
   if (["urgent", "ready"].includes(recommendation.tone)) {
@@ -156,7 +157,7 @@ export function getDailyTasks(batch, date = new Date()) {
   }
 
   const measuredToday = batch.measurements?.some((measurement) => localDateKey(measurement.measuredAt) === dateKey);
-  if (!measuredToday && recommendation.type !== "package") {
+  if (!measuredToday && !completed.has(ACTION_TYPES.COOL) && recommendation.type !== "package") {
     tasks.push({
       type: "measure",
       label: latest ? "Paņem obligāto dienas mērījumu" : "Ievadi pirmo mērījumu",
