@@ -14,6 +14,9 @@ Operators can see who owns every brewery task, safely detect abnormal measuremen
 - Measurements outside hard physical/database limits remain rejected. Plausible but suspicious measurements require a warning confirmation and recorded reason.
 - All canonical volumes are stored in liters. “Tonnas” remain a display convenience and are never silently equated to liters in calculations.
 - Carbonation/manometer output is advisory and fail-closed: no pressure target appears until vessel limits, pressure basis, current CO₂, temperature, headspace, and expected terminal fermentation are known.
+- Brewery operating baseline: a fully closed valve is observed to reach 2 bar and the vessels are operated as capable of 2 bar. Treat 2 bar as a configured operational ceiling, not certified MAWP evidence; a lower vessel/PRV/device limit always wins.
+- The centrifuge liter counter records gross throughput, including beer/product and liquid discarded during discharge/solids cleaning. It is not a direct reading of beer received in Dzidra.
+- Initial estimated residues: approximately 150 L remains in the boil kettle, 200 L in a 4 t fermenter, and 350 L in an 8 t fermenter. Store these as estimates until replaced by measured values.
 - Routine deletion becomes reversible soft deletion. Permanent purge is separate and requires a current export/backup.
 - Monday backup is a persisted maintenance task. The browser cannot silently download a file; an operator explicitly downloads and acknowledges it.
 
@@ -62,8 +65,8 @@ Operators can see who owns every brewery task, safely detect abnormal measuremen
 ### Phase 0 verification checklist
 
 - [ ] Confirm actual Supabase/Netlify plan limits before promising automatic backup retention.
-- [ ] Collect vessel MAWP/working pressure, PRV setting, gauge units/basis, and spunding-device range for tanks 1–13.
-- [ ] Define what the centrifuge liter counter represents: feed, product outlet, or cumulative throughput.
+- [ ] Photograph/read each vessel nameplate and PRV setting. The brewery reports 2 bar operation/full closure; certified MAWP and the exact gauge-vs-absolute basis remain to be confirmed.
+- [x] Define the centrifuge counter: gross cumulative throughput including discharge/cleaning losses, not product output.
 - [ ] Confirm whether `S + D` is always mandatory and whether Dzidra follows the same acid rule.
 - [ ] Confirm whether kettle/tank readings are hot liters, cold liters, mass-derived tons, or estimates.
 
@@ -257,7 +260,7 @@ Operators can see who owns every brewery task, safely detect abnormal measuremen
    - post-boil kettle volume;
    - volume into fermenter;
    - pre-filter tank volume / sent to centrifuge;
-   - centrifuge feed/output counter after its meaning is confirmed;
+   - centrifuge gross-throughput counter (includes discharge/cleaning liquid);
    - volume received in Dzidra;
    - packaged volume;
    - explicit kettle residue, tank/yeast residue, centrifuge reject where measured.
@@ -270,6 +273,13 @@ Operators can see who owns every brewery task, safely detect abnormal measuremen
    - total yield and loss percentage.
 5. Compute each 8 t filtering cycle independently, then aggregate; never subtract the same source volume twice.
 6. Add a separate loss-analysis view by beer, volume class, and process profile. Operator comparison is permitted only after normalization and minimum sample counts, and must be framed as process comparison rather than blame.
+7. Seed editable estimated residue defaults:
+   - boil kettle: 150 L per applicable brew/kettle cycle;
+   - 4 t fermenter heel/yeast: 200 L;
+   - 8 t fermenter heel/yeast: 350 L.
+   Every derived result labels estimated versus measured inputs. A measured value overrides the default without deleting the estimate history.
+8. Calculate vessel headspace from configured vessel nominal volume minus actual transferred beer volume. Prefer measured transfer/fill volume; fall back to brewed volume minus applicable estimated kettle residue and mark the result estimated.
+9. Because the centrifuge counter includes discharge, derive product received only from an independent Dzidra-received reading. If available: `gross centrifuge throughput − Dzidra received = discharge/cleaning and other centrifuge-system difference`; do not label the entire difference as beer loss without confirming cleaning/water contributions.
 
 ### Documentation references
 
@@ -282,6 +292,8 @@ Operators can see who owns every brewery task, safely detect abnormal measuremen
 - [ ] No loss is calculated when either boundary is missing.
 - [ ] Hot and cold liters are not directly subtracted without an explicit correction policy.
 - [ ] Historical unknowns remain null, never zero.
+- [ ] Estimated 150/200/350 L defaults are visibly labeled and never presented as measurements.
+- [ ] Centrifuge gross throughput is never displayed as Dzidra product volume.
 - [ ] Two-cycle 8 t totals equal the sum of cycle results.
 - [ ] Derived stage losses reconcile to total loss within documented rounding tolerance.
 
@@ -321,10 +333,12 @@ Operators can see who owns every brewery task, safely detect abnormal measuremen
    - actual beer volume and vessel total volume/headspace;
    - vessel MAWP/working pressure, PRV setting, spunding range;
    - gauge vs absolute pressure, site altitude, Dry Hop/hop-creep state.
+   - configured operational ceiling of 2 bar from brewery practice, plus separately verified certified MAWP/PRV/device limits.
 8. Carbonation calculations:
    - display CO₂ deficit and residual-fermentation estimate with assumptions;
    - use Brewers Association reference assumptions only in a tested advisory module;
    - cap/suppress output above configured vessel/hardware limits;
+   - never recommend above 2 bar even if another input is missing or higher; once certified values are recorded, use the lowest of 2 bar, MAWP-derived operating limit, PRV limit, and spunding-device limit;
    - wording: **Ieteicamais mērķis — pārbaudi pret tvertnes SOP un kalibrētu manometru**.
 9. If any prerequisite or safety limit is missing, show **Nepietiek datu drošam spiediena ieteikumam** rather than a guessed value.
 10. Dry-hopped beer always shows a hop-creep/secondary-fermentation pressure warning.
