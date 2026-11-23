@@ -13,6 +13,7 @@ const defaultState = {
   fermenters: [],
   batches: [],
   pendingSync: [],
+  breweryDataVersion: null,
 };
 
 async function database() {

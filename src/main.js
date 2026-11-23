@@ -31,7 +31,12 @@ function operatorUnlockPage(message = "") {
 }
 
 async function loadWorkspace() {
-  const { data: breweryData, error } = await supabase.from("breweries").select("id, name").maybeSingle();
+  let { data: breweryData, error } = await supabase.from("breweries").select("id, name, data_version").maybeSingle();
+  if (error?.code === "42703" || error?.code === "PGRST204") {
+    const fallback = await supabase.from("breweries").select("id, name").maybeSingle();
+    breweryData = fallback.data ? { ...fallback.data, data_version: null } : null;
+    error = fallback.error;
+  }
   if (error) {
     if (error.code === "42P01") onboardingPage("Datubāzes tabulas nav atrastas. Pārbaudi, vai pirmā SQL migrācija ir izpildīta.");
     else onboardingPage(`Neizdevās ielādēt darba vidi: ${error.message}`);
@@ -39,6 +44,13 @@ async function loadWorkspace() {
   }
   brewery = breweryData;
   if (!brewery) { onboardingPage(); return; }
+  if (state.breweryDataVersion != null && state.breweryDataVersion !== brewery.data_version) {
+    state.beerTypes = [];
+    state.batches = [];
+    state.pendingSync = [];
+  }
+  state.breweryDataVersion = brewery.data_version;
+  state = await saveState(state);
   const { data: operators, error: operatorError } = await supabase.from("operators").select("id, name, is_active").order("created_at");
   if (operatorError) { operatorUnlockPage(`Neizdevās ielādēt operatorus: ${operatorError.message}`); return; }
   state.operators = operators || [];
@@ -377,7 +389,38 @@ function historyPage() {
 }
 
 function settingsPage() {
-  shell(`<main class="narrow"><section class="page-heading"><div><p class="eyebrow">Konfigurācija</p><h1>Iestatījumi</h1></div></section><section class="panel"><div class="panel-title"><h2>Operatori</h2><span>Katram operatoram ir savs PIN</span></div><div class="operator-list">${state.operators.map((operator) => `<div class="operator-row"><span class="avatar">${operator.name.slice(0, 1).toUpperCase()}</span><strong>${operator.name}</strong>${operator.id === state.activeOperatorId ? `<span class="current-label">Aktīvs</span>` : ""}</div>`).join("")}<form id="operator-form" class="inline-form"><input name="name" placeholder="Jauna operatora vārds" required><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" placeholder="PIN (4–8 cipari)" required><button class="secondary">${icon("UserPlus")} Pievienot</button></form></div></section><section class="panel pin-panel"><div class="panel-title"><div><h2>Mainīt savu PIN</h2><p>Aktīvais operators: ${currentOperator()?.name || "—"}</p></div><span>PIN netiek glabāts atklātā tekstā</span></div><form id="change-pin-form" class="pin-form"><div class="field"><label>Pašreizējais PIN</label><input name="currentPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Jaunais PIN</label><input name="newPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Atkārto jauno PIN</label><input name="newPinConfirm" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="auth-message full" id="pin-message"></div><button class="secondary full">${icon("KeyRound")} Nomainīt PIN</button></form></section><section class="panel notice"><h2>${icon(isSupabaseConfigured ? "CloudCog" : "CloudOff")} ${isSupabaseConfigured ? "Supabase sinhronizācija aktīva" : "Lokālais režīms"}</h2><p>${isSupabaseConfigured ? "Tiešsaistē izmaiņas tiek nosūtītas uz kopīgo datubāzi. Bezsaistē tās paliek šajā ierīcē un tiks nosūtītas pēc interneta atjaunošanās." : "Dati droši glabājas šajā ierīcē ar IndexedDB."}</p><strong>${state.pendingSync.length} ieraksti gaida sinhronizāciju</strong></section></main>`, "Iestatījumi");
+  shell(`<main class="narrow"><section class="page-heading"><div><p class="eyebrow">Konfigurācija</p><h1>Iestatījumi</h1></div></section><section class="panel"><div class="panel-title"><h2>Operatori</h2><span>Katram operatoram ir savs PIN</span></div><div class="operator-list">${state.operators.map((operator) => `<div class="operator-row"><span class="avatar">${operator.name.slice(0, 1).toUpperCase()}</span><strong>${operator.name}</strong>${operator.id === state.activeOperatorId ? `<span class="current-label">Aktīvs</span>` : ""}</div>`).join("")}<form id="operator-form" class="inline-form"><input name="name" placeholder="Jauna operatora vārds" required><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" placeholder="PIN (4–8 cipari)" required><button class="secondary">${icon("UserPlus")} Pievienot</button></form></div></section><section class="panel pin-panel"><div class="panel-title"><div><h2>Mainīt savu PIN</h2><p>Aktīvais operators: ${currentOperator()?.name || "—"}</p></div><span>PIN netiek glabāts atklātā tekstā</span></div><form id="change-pin-form" class="pin-form"><div class="field"><label>Pašreizējais PIN</label><input name="currentPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Jaunais PIN</label><input name="newPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Atkārto jauno PIN</label><input name="newPinConfirm" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="auth-message full" id="pin-message"></div><button class="secondary full">${icon("KeyRound")} Nomainīt PIN</button></form></section><section class="panel notice"><h2>${icon(isSupabaseConfigured ? "CloudCog" : "CloudOff")} ${isSupabaseConfigured ? "Supabase sinhronizācija aktīva" : "Lokālais režīms"}</h2><p>${isSupabaseConfigured ? "Tiešsaistē izmaiņas tiek nosūtītas uz kopīgo datubāzi. Bezsaistē tās paliek šajā ierīcē un tiks nosūtītas pēc interneta atjaunošanās." : "Dati droši glabājas šajā ierīcē ar IndexedDB."}</p><strong>${state.pendingSync.length} ieraksti gaida sinhronizāciju</strong></section><section class="panel reset-panel"><div><p class="eyebrow danger-text">Bīstamā zona</p><h2>Dzēst visus alus datus</h2><p>Neatgriezeniski dzēsīs visas partijas, mērījumus, darbības, filtrēšanas un pildīšanas vēsturi un alus tipus. Operatori, konts un tvertnes paliks.</p></div><button class="danger-button solid" data-reset-brewing-data>${icon("Trash2", 17)} Dzēst visu alus vēsturi</button></section></main>`, "Iestatījumi");
+}
+
+function resetBrewingDataDialog() {
+  const dialog = document.createElement("dialog");
+  dialog.innerHTML = `<form method="dialog" class="dialog-card delete-dialog" id="reset-data-form"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow danger-text">Neatgriezeniska darbība</p><h2>Dzēst visu alus vēsturi?</h2><p>Tiks neatgriezeniski dzēstas visas partijas un ar tām saistītā statistika visās ierīcēs. Operatori un tvertnes paliks.</p><div class="field"><label>Lai apstiprinātu, ieraksti <strong>DZĒST VISU</strong></label><input name="confirmation" autocomplete="off" required></div><div class="auth-message error" id="reset-message"></div><div class="dialog-actions"><button class="secondary" value="cancel">Atcelt</button><button class="danger-button solid" value="reset">${icon("Trash2", 17)} Dzēst visu</button></div></form>`;
+  document.body.append(dialog); dialog.showModal();
+  dialog.addEventListener("close", async () => {
+    if (dialog.returnValue === "reset") {
+      const confirmation = new FormData(dialog.querySelector("form")).get("confirmation");
+      if (confirmation !== "DZĒST VISU") {
+        dialog.remove();
+        alert("Dzēšana atcelta: apstiprinājuma teksts nebija pareizs.");
+        return;
+      }
+      await resetAllBrewingData();
+    }
+    dialog.remove();
+  });
+}
+
+async function resetAllBrewingData() {
+  const { data: newVersion, error } = await supabase.rpc("reset_brewing_data", { confirmation_text: "DZĒST VISU" });
+  if (error) { alert(`Neizdevās dzēst datus: ${error.message}`); return; }
+  state.beerTypes = [];
+  state.batches = [];
+  state.pendingSync = [];
+  state.breweryDataVersion = newVersion;
+  state = await saveState(state);
+  route = "dashboard";
+  render();
+  alert("Visa alus vēsture ir izdzēsta. Var sākt datu ievadi no jauna.");
 }
 
 async function changeOperatorPin(form) {
@@ -433,6 +476,7 @@ document.addEventListener("click", (event) => {
   if (finishPackagingButton) { finishPackagingDialog(finishPackagingButton.dataset.finishPackaging); return; }
   const deleteBatchButton = event.target.closest("[data-delete-batch]");
   if (deleteBatchButton) { deleteBatchDialog(deleteBatchButton.dataset.deleteBatch); return; }
+  if (event.target.closest("[data-reset-brewing-data]")) { resetBrewingDataDialog(); return; }
   if (event.target.closest('[data-action="operators"]')) operatorDialog();
 });
 
