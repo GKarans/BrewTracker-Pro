@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BATCH_STATUS, calculateHistoryStats, completedPackagingVolume, formatBatchNumber, getDailyTasks, getFermenter, getRecommendedAction, remainingInFermenter, requiredPackagingRuns, validateGravity } from "../src/domain.js";
+import { BATCH_STATUS, buildWorkTimeline, calculateHistoryStats, completedPackagingVolume, formatBatchNumber, getDailyTasks, getFermenter, getRecommendedAction, remainingInFermenter, requiredPackagingRuns, validateGravity } from "../src/domain.js";
 
 describe("partijas numurs", () => {
   it("apvieno divciparu gadu, kārtas numuru un tvertni", () => {
@@ -37,6 +37,14 @@ describe("vēsturiskā prognoze", () => {
   it("aprēķina vidējo dienu skaitu", () => {
     const batches = [{ beerTypeId: "a", status: BATCH_STATUS.FINISHED, brewDate: "2026-08-01", actions: [{ type: "cool", performedAt: "2026-08-11T10:00:00" }] }, { beerTypeId: "a", status: BATCH_STATUS.FINISHED, brewDate: "2026-09-01", actions: [{ type: "cool", performedAt: "2026-09-13T10:00:00" }] }];
     expect(calculateHistoryStats(batches, "a").cool.averageDays).toBe(11);
+  });
+  it("saliek nākamos darbus hronoloģiskā laika līnijā", () => {
+    const batches = [
+      { id: "old", beerTypeId: "a", status: BATCH_STATUS.FINISHED, brewDate: "2026-10-01", actions: [{ type: "spund", performedAt: "2026-10-06T10:00:00" }], measurements: [] },
+      { id: "active", beerTypeId: "a", status: BATCH_STATUS.ACTIVE, brewDate: "2026-11-20", spundGravity: 1026, hasDryHop: false, coolingGravity: 1018, fgTarget: 1012, actions: [], packagingRuns: [], measurements: [{ gravity: 1040, measuredAt: "2026-11-23T09:00:00" }] },
+    ];
+    const timeline = buildWorkTimeline(batches, new Date("2026-11-23T12:00:00"));
+    expect(timeline.find((task) => task.type === "prediction_spund")).toMatchObject({ date: "2026-11-25", sampleCount: 1 });
   });
 });
 

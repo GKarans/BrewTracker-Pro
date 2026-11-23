@@ -97,14 +97,14 @@ export function validatePressure(value, required = false) {
 }
 
 export function daysBetween(startDate, endDate) {
-  const start = new Date(`${startDate}T00:00:00`);
-  const end = new Date(`${endDate}T00:00:00`);
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
   return Math.round((end - start) / 86_400_000);
 }
 
 export function addDays(date, days) {
-  const result = new Date(`${date}T00:00:00`);
-  result.setDate(result.getDate() + Math.round(days));
+  const result = new Date(`${date}T00:00:00Z`);
+  result.setUTCDate(result.getUTCDate() + Math.round(days));
   return result.toISOString().slice(0, 10);
 }
 
@@ -166,6 +166,40 @@ export function getDailyTasks(batch, date = new Date()) {
   }
 
   return tasks;
+}
+
+export function buildWorkTimeline(batches, date = new Date()) {
+  const dateKey = localDateKey(date);
+  const active = batches.filter((batch) => batch.status !== BATCH_STATUS.FINISHED);
+  return active.flatMap((batch) => {
+    const daily = getDailyTasks(batch, date).map((task) => ({
+      ...task,
+      batchId: batch.id,
+      date: dateKey,
+      source: "current",
+    }));
+    const dailyTypes = new Set(daily.map((task) => task.type));
+    const completed = new Set((batch.actions || []).map((action) => action.type));
+    const stats = calculateHistoryStats(batches, batch.beerTypeId);
+    const types = [ACTION_TYPES.SPUND, ...(batch.hasDryHop ? [ACTION_TYPES.DRY_HOP] : []), ACTION_TYPES.COOL, ACTION_TYPES.FINISH];
+    const predictions = types.flatMap((type) => {
+      const stat = stats[type];
+      if (!stat || completed.has(type) || dailyTypes.has(type)) return [];
+      const predictedDate = addDays(batch.brewDate, stat.averageDays);
+      const overdue = predictedDate < dateKey;
+      return [{
+        batchId: batch.id,
+        type: `prediction_${type}`,
+        date: overdue ? dateKey : predictedDate,
+        predictedDate,
+        label: overdue ? `Pārbaudi — prognozēts: ${ACTION_LABELS[type]}` : `Prognozēts: ${ACTION_LABELS[type]}`,
+        tone: overdue ? "urgent" : "planned",
+        source: "history",
+        sampleCount: stat.count,
+      }];
+    });
+    return [...daily, ...predictions];
+  }).sort((a, b) => a.date.localeCompare(b.date) || (a.tone === "urgent" ? -1 : 1));
 }
 
 function localDateKey(value) {

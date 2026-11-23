@@ -1,6 +1,6 @@
 import "./styles.css";
 import { icons, createElement } from "lucide";
-import { ACTION_LABELS, ACTION_TYPES, BATCH_STATUS, FERMENTERS, addDays, calculateHistoryStats, completedPackagingVolume, formatBatchNumber, getDailyTasks, getFermenter, getRecommendedAction, remainingInFermenter, requiredPackagingRuns, validateGravity, validatePh, validatePressure, validateTemperature } from "./domain.js";
+import { ACTION_LABELS, ACTION_TYPES, BATCH_STATUS, FERMENTERS, addDays, buildWorkTimeline, calculateHistoryStats, completedPackagingVolume, formatBatchNumber, getDailyTasks, getFermenter, getRecommendedAction, remainingInFermenter, requiredPackagingRuns, validateGravity, validatePh, validatePressure, validateTemperature } from "./domain.js";
 import { loadState, saveState } from "./store.js";
 import { isSupabaseConfigured, supabase } from "./supabase.js";
 import { fetchRemoteState, syncEvent } from "./sync.js";
@@ -157,7 +157,7 @@ async function submitAuth(form) {
 function activeBatches() { return state.batches.filter((batch) => batch.status !== BATCH_STATUS.FINISHED); }
 function activePackagingRun() { return state.batches.flatMap((batch) => (batch.packagingRuns || []).map((run) => ({ ...run, batch }))).find((item) => item.status === "filtered"); }
 function currentOperator() { return state.operators.find((operator) => operator.id === state.activeOperatorId) || state.operators[0]; }
-function today() { return new Date().toISOString().slice(0, 10); }
+function today() { return localDateTimeValue().slice(0, 10); }
 function localDateTimeValue(value = new Date()) {
   const date = new Date(value);
   date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
@@ -260,7 +260,7 @@ function urlBase64ToUint8Array(value) {
 
 function shell(content, title = "BrewTracker") {
   const taskCount = dailyTaskItems().length;
-  app.innerHTML = `<div class="app-shell"><header class="topbar"><button class="brand" data-route="dashboard"><span class="brand-mark">BT</span><span>${title}</span></button><nav class="desktop-nav"><button data-route="dashboard" class="${route === "dashboard" ? "active" : ""}">${icon("LayoutDashboard", 17)} Tvertnes</button><button data-route="history" class="${route === "history" ? "active" : ""}">${icon("History", 17)} Vēsture</button><button data-route="settings" class="${route === "settings" ? "active" : ""}">${icon("Settings", 17)} Iestatījumi</button></nav>${taskCount ? `<button class="task-bell" data-show-daily-tasks title="Šodienas darbi">${icon("BellRing", 18)}<span>${taskCount}</span></button>` : ""}<div class="network ${navigator.onLine ? "online" : "offline"}">${navigator.onLine ? "Tiešsaistē" : "Bezsaistē"}</div><button class="operator" data-action="operators">${icon("UserRound", 18)} ${currentOperator()?.name || "Operators"}</button></header>${content}<nav class="bottom-nav"><button data-route="dashboard" class="${route === "dashboard" ? "active" : ""}">${icon("LayoutDashboard")}<span>Tvertnes</span></button><button data-route="history" class="${route === "history" ? "active" : ""}">${icon("History")}<span>Vēsture</span></button><button data-route="settings" class="${route === "settings" ? "active" : ""}">${icon("Settings")}<span>Iestatījumi</span></button></nav></div>`;
+  app.innerHTML = `<div class="app-shell"><header class="topbar"><button class="brand" data-route="dashboard"><span class="brand-mark">BT</span><span>${title}</span></button><nav class="desktop-nav"><button data-route="dashboard" class="${route === "dashboard" ? "active" : ""}">${icon("LayoutDashboard", 17)} Tvertnes</button><button data-route="tasks" class="${route === "tasks" ? "active" : ""}">${icon("ListTodo", 17)} Darbi</button><button data-route="history" class="${route === "history" ? "active" : ""}">${icon("History", 17)} Vēsture</button><button data-route="analytics" class="${route === "analytics" ? "active" : ""}">${icon("ChartNoAxesCombined", 17)} Analīze</button><button data-route="settings" class="${route === "settings" ? "active" : ""}">${icon("Settings", 17)} Iestatījumi</button></nav>${taskCount ? `<button class="task-bell" data-show-daily-tasks title="Šodienas darbi">${icon("BellRing", 18)}<span>${taskCount}</span></button>` : ""}<div class="network ${navigator.onLine ? "online" : "offline"}">${navigator.onLine ? "Tiešsaistē" : "Bezsaistē"}</div><button class="operator" data-action="operators">${icon("UserRound", 18)} ${currentOperator()?.name || "Operators"}</button></header>${content}<nav class="bottom-nav"><button data-route="dashboard" class="${route === "dashboard" ? "active" : ""}">${icon("LayoutDashboard")}<span>Tvertnes</span></button><button data-route="tasks" class="${route === "tasks" ? "active" : ""}">${icon("ListTodo")}<span>Darbi</span></button><button data-route="history" class="${route === "history" ? "active" : ""}">${icon("History")}<span>Vēsture</span></button><button data-route="analytics" class="${route === "analytics" ? "active" : ""}">${icon("ChartNoAxesCombined")}<span>Analīze</span></button><button data-route="settings" class="${route === "settings" ? "active" : ""}">${icon("Settings")}<span>Iestatījumi</span></button></nav></div>`;
 }
 
 function dashboard() {
@@ -478,6 +478,43 @@ async function completeAction(type, form) {
   } catch (error) { alert(error.message); }
 }
 
+function tasksPage() {
+  const timeline = buildWorkTimeline(state.batches);
+  const horizon = addDays(today(), 3);
+  const upcoming = timeline.filter((task) => task.date <= horizon);
+  const later = timeline.filter((task) => task.date > horizon);
+  shell(`<main><section class="page-heading"><div><p class="eyebrow">Procesa kalendārs</p><h1>Darbu plāns</h1><p>Šodienas darbi un prognoze uz priekšu pēc iepriekšējām tā paša alus partijām.</p></div></section><section class="planning-summary"><article><strong>${timeline.filter((task) => task.date === today()).length}</strong><span>darbi šodien</span></article><article><strong>${upcoming.filter((task) => task.date > today()).length}</strong><span>nākamajās 3 dienās</span></article><article><strong>${later.length}</strong><span>ieplānoti vēlāk</span></article></section><section class="timeline-panel"><div class="panel-title"><div><h2>Šodiena un nākamās trīs dienas</h2><p>Piektdien pārbaudi šo sarakstu pirms došanās prom.</p></div></div>${renderTimeline(upcoming, "Tuvākajās dienās prognozētu darbu nav.")}</section><section class="timeline-panel later-timeline"><div class="panel-title"><div><h2>Vēlākie darbi</h2><p>Hronoloģiska prognoze visām aktīvajām partijām.</p></div></div>${renderTimeline(later, "Vēlāku darbu prognozei vēl nepietiek vēsturisko datu.")}</section></main>`, "Darbu plāns");
+}
+
+function renderTimeline(items, emptyMessage) {
+  if (!items.length) return `<div class="empty-state compact">${icon("CalendarCheck", 32)}<p>${emptyMessage}</p></div>`;
+  const groups = items.reduce((result, item) => {
+    (result[item.date] ||= []).push(item);
+    return result;
+  }, {});
+  return `<div class="work-timeline">${Object.entries(groups).map(([date, tasks]) => `<section class="timeline-day"><div class="timeline-date"><strong>${date === today() ? "Šodien" : new Intl.DateTimeFormat("lv-LV", { weekday: "long", day: "2-digit", month: "2-digit" }).format(new Date(`${date}T12:00:00`))}</strong><small>${formatDate(date)}</small></div><div class="timeline-items">${tasks.map((task) => timelineTask(task)).join("")}</div></section>`).join("")}</div>`;
+}
+
+function timelineTask(task) {
+  const batch = state.batches.find((item) => item.id === task.batchId);
+  const beer = batch && state.beerTypes.find((item) => item.id === batch.beerTypeId);
+  return `<button class="timeline-task ${task.tone}" data-open-batch="${task.batchId}"><span class="tank-number">${batch?.fermenterNumber || "?"}</span><span><strong>${task.label}</strong><small>${beer?.name || "Nezināms alus"} · #${batch?.batchNumber || "—"}${task.source === "history" ? ` · prognoze no ${task.sampleCount} ${task.sampleCount === 1 ? "partijas" : "partijām"}` : ""}</small></span>${icon("ChevronRight")}</button>`;
+}
+
+function analyticsPage() {
+  const beers = state.beerTypes.map((beer) => ({
+    ...beer,
+    batches: state.batches.filter((batch) => batch.beerTypeId === beer.id && batch.status === BATCH_STATUS.FINISHED),
+  })).sort((a, b) => b.batches.length - a.batches.length);
+  shell(`<main><section class="page-heading"><div><p class="eyebrow">Vēsturisko datu salīdzinājums</p><h1>Alus analīze</h1><p>Šī sadaļa krās datus pilnai fermentācijas ainai. Salīdzināsim pēdējos piecus vārījumus ar visu partiju vidējo.</p></div></section><section class="analysis-metrics">${["Blīvums", "pH", "Temperatūra", "Spiediens", "CO₂"].map((metric) => `<span>${icon(metric === "Temperatūra" ? "Thermometer" : metric === "Spiediens" ? "Gauge" : "ChartSpline", 17)} ${metric}</span>`).join("")}</section><section class="analysis-grid">${beers.length ? beers.map((beer) => analysisBeerCard(beer)).join("") : `<div class="empty-state analysis-empty">${icon("ChartNoAxesCombined", 44)}<h2>Analīzei vēl nav alus datu</h2><p>Pēc pabeigtu partiju uzkrāšanas katram alum šeit būs savas līknes.</p></div>`}</section><section class="panel analysis-note"><div><p class="eyebrow">Plānotā analīze</p><h2>Ko redzēsim katram alum</h2></div><ul><li>Pēdējo 5 vārījumu atsevišķas fermentācijas līknes</li><li>Visu vēsturisko partiju vidējā līkne pa dienām</li><li>Blīvuma, pH, temperatūras, spiediena un CO₂ izmaiņas</li><li>Vārsta, Dry Hop, dzesēšanas, filtrēšanas un pildīšanas punkti</li><li>Atšķirības un novirzes starp partijām</li></ul></section></main>`, "Alus analīze");
+}
+
+function analysisBeerCard(beer) {
+  const count = beer.batches.length;
+  const readiness = count >= 5 ? "Pilna analīze būs pieejama" : count >= 2 ? "Var sākt salīdzināšanu" : "Vajadzīgas vismaz 2 pabeigtas partijas";
+  return `<article class="analysis-beer-card"><div class="analysis-card-head"><div><span>${count} pabeigtas partijas</span><h2>${beer.name}</h2></div><span class="analysis-status ${count >= 2 ? "ready" : ""}">${readiness}</span></div><div class="chart-placeholder" aria-hidden="true"><svg viewBox="0 0 420 110" preserveAspectRatio="none"><path d="M0 18 C65 25 80 52 140 48 S220 73 280 70 S350 91 420 92"/><path d="M0 27 C55 34 95 40 145 57 S230 62 285 78 S360 82 420 98"/><path class="average" d="M0 22 C60 30 90 46 143 52 S225 68 282 74 S355 87 420 95"/></svg></div><div class="analysis-legend"><span><i></i>Pēdējie vārījumi</span><span><i class="average"></i>Vidējais</span></div></article>`;
+}
+
 function historyPage() {
   const finished = state.batches.filter((batch) => batch.status === BATCH_STATUS.FINISHED).reverse();
   shell(`<main><section class="page-heading"><div><p class="eyebrow">Pabeigtās partijas</p><h1>Vēsture</h1></div></section><section class="history-list">${finished.length ? finished.map((batch) => { const beer = state.beerTypes.find((item) => item.id === batch.beerTypeId); return `<button class="history-row" data-open-batch="${batch.id}"><span class="tank-number">${batch.fermenterNumber}</span><span><strong>${beer.name} · ${batch.volumeTons} t</strong><small>#${batch.batchNumber} · ${formatDate(batch.brewDate)} · ${batch.measurements.length} mērījumi</small></span>${icon("ChevronRight")}</button>`; }).join("") : `<div class="empty-state">${icon("History", 38)}<h2>Vēsture vēl ir tukša</h2><p>Pabeigtās partijas būs redzamas šeit.</p></div>`}</section></main>`, "Vēsture");
@@ -550,7 +587,9 @@ function render() {
   if (route === "dashboard") dashboard();
   else if (route === "new-batch") newBatchForm();
   else if (route === "batch") batchDetail();
+  else if (route === "tasks") tasksPage();
   else if (route === "history") historyPage();
+  else if (route === "analytics") analyticsPage();
   else settingsPage();
 }
 
