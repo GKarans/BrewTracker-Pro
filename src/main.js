@@ -1110,9 +1110,9 @@ function chartSvg(seriesList, average, metric) {
   const unit = ANALYSIS_METRICS[metric].unit ? ` ${ANALYSIS_METRICS[metric].unit}` : "";
   const observedPoints = seriesList.map((series, index) => series.points.map((point) => {
     const label = `${series.batchNumber}: ${point.day}. fermentācijas diena · ${point.value.toFixed(precision)}${unit}`;
-    return `<circle class="measurement-point ${index === seriesList.length - 1 ? "current" : ""}" cx="${(point.day / maxDay) * 100}" cy="${y(point.value)}" r="1.5"><title>${escapeHtml(label)}</title></circle>`;
+    return `<ellipse class="measurement-point ${index === seriesList.length - 1 ? "current" : ""}" cx="${(point.day / maxDay) * 100}" cy="${y(point.value)}" rx="0.43" ry="1.5"><title>${escapeHtml(label)}</title></ellipse>`;
   }).join("")).join("");
-  return `<div class="analysis-chart" role="img" aria-label="${escapeHtml(ANALYSIS_METRICS[metric].label)} pēc fermentācijas dienas"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${bandPath ? `<path class="control-band" d="${bandPath}"/>` : ""}${seriesList.map((series, index) => `<path class="batch-line ${index === seriesList.length - 1 ? "current" : ""}" d="${line(series.points)}"/>`).join("")}${average.length > 1 ? `<path class="average-line" d="${line(average)}"/>` : ""}${observedPoints}</svg><div class="chart-axis"><span>${min.toFixed(metric === "gravity" ? 0 : 1)}</span><span>${max.toFixed(metric === "gravity" ? 0 : 1)}</span><span>Fermentācijas diena 0–${maxDay}</span></div></div>`;
+  return `<div class="analysis-chart" role="img" aria-label="${escapeHtml(ANALYSIS_METRICS[metric].label)} pēc fermentācijas dienas"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${bandPath ? `<path class="control-band" d="${bandPath}"/>` : ""}${seriesList.map((series, index) => `<path class="batch-line ${index === seriesList.length - 1 ? "current" : ""}" d="${line(series.points)}"/>`).join("")}${average.length > 1 ? `<path class="average-line" d="${line(average)}"/>` : ""}${observedPoints}</svg><div class="chart-axis"><span class="chart-y-max">${max.toFixed(metric === "gravity" ? 0 : 1)}</span><span class="chart-y-min">${min.toFixed(metric === "gravity" ? 0 : 1)}</span><span class="chart-x-label">Fermentācijas diena 0–${maxDay}</span></div></div>`;
 }
 
 function metricCard(metric, visibleBatches, allBatches) {
