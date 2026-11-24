@@ -81,7 +81,7 @@ update public.fermenters f set cleanliness_status=case
   else 'legacy_ready' end;
 
 drop index if exists public.one_active_batch_per_fermenter;
-create unique index one_unreleased_batch_per_fermenter
+create unique index if not exists one_unreleased_batch_per_fermenter
   on public.batches (fermenter_id)
   where fermenter_released_at is null and deleted_at is null;
 
@@ -128,7 +128,7 @@ for each row execute function public.mark_vessel_occupied_after_batch();
 -- ready and no other active batch has claimed it.
 create or replace function public.validate_batch_restore_vessel()
 returns trigger language plpgsql set search_path='' as $$
-declare vessel public.fermenters;
+declare vessel public.fermenters; brite public.fermenters;
 begin
   if old.deleted_at is not null and new.deleted_at is null and new.fermenter_released_at is null then
     select * into vessel from public.fermenters where id=new.fermenter_id for update;
