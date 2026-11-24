@@ -23,15 +23,21 @@ alter table public.batches
 do $$
 declare existing_constraint text;
 begin
-  select c.conname into existing_constraint
-  from pg_constraint c
-  where c.conrelid='public.beer_types'::regclass
-    and c.contype='c'
-    and pg_get_constraintdef(c.oid) like '%dry_hop_gravity%'
-  limit 1;
-  if existing_constraint is not null then
+  -- The migration is deliberately safe to re-run from the SQL editor: remove
+  -- both the original constraint and a constraint created by an earlier,
+  -- interrupted import-migration attempt.
+  for existing_constraint in
+    select c.conname
+    from pg_constraint c
+    where c.conrelid='public.beer_types'::regclass
+      and c.contype='c'
+      and (
+        pg_get_constraintdef(c.oid) like '%dry_hop_gravity%'
+        or c.conname='beer_types_dry_hop_optional_history_check'
+      )
+  loop
     execute format('alter table public.beer_types drop constraint %I', existing_constraint);
-  end if;
+  end loop;
 end $$;
 alter table public.beer_types add constraint beer_types_dry_hop_optional_history_check
   check (not has_dry_hop or dry_hop_gravity is null or dry_hop_gravity between 950 and 1200);
