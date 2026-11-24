@@ -6,7 +6,7 @@ function throwOnError(result) {
 }
 
 export async function fetchRemoteState(localState, breweryId, sessionToken = null) {
-  const [fermenters, beerTypes, batches, measurements, actions, packagingRuns, workItems, workItemEvents] = await Promise.all([
+  const [fermenters, beerTypes, batches, measurements, actions, packagingRuns, workItems, workItemEvents, cleaningCycles, cleaningEvents] = await Promise.all([
     supabase.from("fermenters").select("*").order("number"),
     supabase.from("beer_types").select("*").order("name"),
     supabase.from("batches").select("*").order("brew_date"),
@@ -15,8 +15,10 @@ export async function fetchRemoteState(localState, breweryId, sessionToken = nul
     supabase.from("packaging_runs").select("*").order("filtered_at"),
     supabase.from("work_items").select("*").order("due_at"),
     supabase.from("work_item_events").select("*").order("created_at"),
+    supabase.from("vessel_cleaning_cycles").select("*").order("completed_at", { ascending: false }),
+    supabase.from("vessel_cleaning_events").select("*").order("created_at", { ascending: false }),
   ]);
-  [fermenters, beerTypes, batches, measurements, actions, packagingRuns, workItems, workItemEvents].forEach(throwOnError);
+  [fermenters, beerTypes, batches, measurements, actions, packagingRuns, workItems, workItemEvents, cleaningCycles, cleaningEvents].forEach(throwOnError);
   let deletedBatches = localState.deletedBatches || [];
   if (sessionToken) {
     const deleted = await supabase.rpc("list_deleted_batches", { session_token: sessionToken });
@@ -28,7 +30,15 @@ export async function fetchRemoteState(localState, breweryId, sessionToken = nul
   const activePackagingRuns = packagingRuns.data.filter((item) => !item.deleted_at);
   return {
     ...localState,
-    fermenters: fermenters.data,
+    fermenters: fermenters.data.map((item) => ({
+      ...item,
+      cleanlinessStatus: item.cleanliness_status || "legacy_ready",
+      cleanedAt: item.cleaned_at,
+      cleanedBy: item.cleaned_by,
+      cleaningVersion: item.cleaning_version || 1,
+      consecutiveAcidSkips: item.consecutive_acid_skips || 0,
+      lastCleaningChemicals: item.last_cleaning_chemicals || [],
+    })),
     beerTypes: beerTypes.data.map((item) => ({ id: item.id, version: item.version || 1, name: item.name, ogTarget: item.og_target, fgTarget: item.fg_target, spundGravity: item.spund_gravity, hasDryHop: item.has_dry_hop, dryHopGravity: item.dry_hop_gravity, coolingGravity: item.cooling_gravity, co2Target: Number(item.co2_target) })),
     batches: activeBatchRows.map((batch) => ({
       id: batch.id,
@@ -51,6 +61,7 @@ export async function fetchRemoteState(localState, breweryId, sessionToken = nul
       createdBy: batch.created_by,
       createdAt: batch.created_at,
       finishedAt: batch.finished_at,
+      fermenterReleasedAt: batch.fermenter_released_at,
       version: batch.version || 1,
       measurements: activeMeasurements.filter((item) => item.batch_id === batch.id).map((item) => { const linkedAction = activeActions.find((action) => action.id === item.process_action_id); return { id: item.id, version: item.version || 1, measuredAt: item.measured_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), co2Vol: item.co2_vol == null ? null : Number(item.co2_vol), note: item.note || "", operatorId: item.operator_id, processActionId: item.process_action_id, actionType: linkedAction?.action_type || null, warningCodes: item.warning_codes || [], warningDetails: item.warning_details || [], anomalyConfirmedAt: item.anomaly_confirmed_at, anomalyReason: item.anomaly_reason, anomalyBaselineId: item.anomaly_baseline_measurement_id }; }),
       actions: activeActions.filter((item) => item.batch_id === batch.id).map((item) => ({ id: item.id, version: item.version || 1, type: item.action_type, performedAt: item.performed_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), note: item.note || "", operatorId: item.operator_id })),
@@ -59,6 +70,8 @@ export async function fetchRemoteState(localState, breweryId, sessionToken = nul
     deletedBatches: deletedBatches.map((item) => ({ id: item.id, batchNumber: item.batch_number, brewDate: item.brew_date, beerName: item.beer_name, version: item.version, deletedAt: item.deleted_at, deleteReason: item.delete_reason, deletedByName: item.deleted_by_name })),
     workItems: workItems.data.map((item) => ({ id:item.id, batchId:item.batch_id, occurrenceKey:item.occurrence_key, type:item.work_type, label:item.label, source:item.source, dueAt:item.due_at, status:item.status, acceptedBy:item.accepted_by, acceptedAt:item.accepted_at, completedBy:item.completed_by, completedAt:item.completed_at, postponedBy:item.postponed_by, postponedAt:item.postponed_at, postponeReason:item.postpone_reason, skippedBy:item.skipped_by, skippedAt:item.skipped_at, skipReason:item.skip_reason, linkedMeasurementId:item.linked_measurement_id, linkedActionId:item.linked_action_id, version:item.version })),
     workItemEvents: workItemEvents.data.map((item) => ({ id:item.id, workItemId:item.work_item_id, operatorId:item.operator_id, type:item.event_type, previousStatus:item.previous_status, newStatus:item.new_status, reason:item.reason, details:item.details, createdAt:item.created_at })),
+    cleaningCycles: cleaningCycles.data.map((item) => ({ id:item.id, fermenterId:item.fermenter_id, relatedBatchId:item.related_batch_id, startedAt:item.started_at, startedBy:item.started_by, completedAt:item.completed_at, completedBy:item.completed_by, usedAlkali:item.used_alkali, usedAcid:item.used_acid, usedDisinfectant:item.used_disinfectant, program:item.program, note:item.note })),
+    cleaningEvents: cleaningEvents.data.map((item) => ({ id:item.id, fermenterId:item.fermenter_id, cleaningCycleId:item.cleaning_cycle_id, relatedBatchId:item.related_batch_id, operatorId:item.operator_id, type:item.event_type, details:item.details, createdAt:item.created_at })),
     pendingSync: [],
     breweryId,
   };

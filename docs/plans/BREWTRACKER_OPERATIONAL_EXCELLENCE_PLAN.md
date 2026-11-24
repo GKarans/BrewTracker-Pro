@@ -214,7 +214,7 @@ Implementation status (2026-11-24): operator sessions and session-attributed syn
 1. Add current fermenter fields: `cleanliness_status`, `cleaned_at`, `cleaned_by`, `cleaning_version`.
 2. Add `vessel_cleaning_cycles` with vessel, related batch, started/completed times/operators, `used_alkali`, `used_acid`, `used_disinfectant`, note, and status.
 3. Separate vessel release from batch completion:
-   - when remaining beer in a fermenter reaches zero after final filtering, set `fermenter_released_at` and atomically mark vessel dirty;
+   - after the final planned filtering cycle, set `fermenter_released_at` and atomically mark the vessel dirty; do not wait for filtered volume to equal nominal batch volume because the expected fermenter heel is about 200 L (4 t) or 350 L (8 t);
    - allow the batch to continue in Dzidra/pildīšana;
    - replace the current active-batch uniqueness rule with a rule based on unreleased vessel assignment.
 4. Free vessel card states:
@@ -228,6 +228,12 @@ Implementation status (2026-11-24): operator sessions and session-attributed syn
 7. Starting a new batch is blocked in both UI and DB trigger unless the vessel is clean.
 8. Decide and configure whether Dzidra uses the same rule; do not silently assume.
 
+Decision: Dzidra uses the same S/D requirement and third-wash acid cadence as
+fermentation vessels. Existing empty vessels are migrated as visibly labelled
+`legacy_ready` so deployment does not invent a cleaning record or unexpectedly
+stop brewing; their first status change starts the auditable cleaning history.
+The UI labels this state **Brīva · gatava (pārnests statuss)**, never “tīra”.
+
 ### Documentation references
 
 - Extend `fermenters` from migrations `202609150001` and `202609150004`.
@@ -237,13 +243,13 @@ Implementation status (2026-11-24): operator sessions and session-attributed syn
 
 ### Verification checklist
 
-- [ ] Final filter release marks the correct fermenter dirty even while Dzidra awaits packaging.
-- [ ] First 4 t cycle from an 8 t tank does not release or dirty the vessel.
-- [ ] Second cycle releases and dirties it exactly once.
-- [ ] Dirty vessel cannot receive a batch.
-- [ ] Clean dialog records S/A/D, operator, time, and note.
-- [ ] Third cleaning without acid is rejected until A is selected.
-- [ ] Toggle is absent while occupied.
+- [x] Final filter release marks the correct fermenter dirty even while Dzidra awaits packaging.
+- [x] First 4 t cycle from an 8 t tank does not release or dirty the vessel.
+- [x] Second cycle releases and dirties it exactly once.
+- [x] Dirty vessel cannot receive a batch.
+- [x] Clean dialog records S/A/D, operator, time, and note.
+- [x] Third cleaning without acid is rejected until A is selected.
+- [x] Toggle is absent while occupied.
 
 ### Anti-pattern guards
 

@@ -15,6 +15,8 @@ const defaultState = {
   deletedBatches: [],
   workItems: [],
   workItemEvents: [],
+  cleaningCycles: [],
+  cleaningEvents: [],
   pendingSync: [],
   breweryDataVersion: null,
 };

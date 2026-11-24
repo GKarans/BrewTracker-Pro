@@ -41,6 +41,11 @@ export function completedPackagingVolume(batch) {
     .reduce((total, run) => total + Number(run.volumeTons), 0);
 }
 
+export function packagingCyclesComplete(batch) {
+  return (batch.packagingRuns || []).filter((run) => run.status === "packaged").length
+    >= requiredPackagingRuns(batch.volumeTons);
+}
+
 export function filteredVolume(batch) {
   return (batch.packagingRuns || []).reduce((total, run) => total + Number(run.volumeTons), 0);
 }
@@ -196,7 +201,7 @@ export function getRecommendedAction(batch) {
   if (completed.has(ACTION_TYPES.COOL) && latest.gravity <= batch.fgTarget) {
     const activeRun = (batch.packagingRuns || []).find((run) => run.status === "filtered");
     if (activeRun) return { type: "package", label: "Sapildi alu no Dzidras", tone: "urgent" };
-    if (completedPackagingVolume(batch) < Number(batch.volumeTons)) return { type: "filter", label: "Filtrē nākamo daļu uz Dzidru", tone: "ready" };
+    if (!packagingCyclesComplete(batch)) return { type: "filter", label: "Filtrē nākamo daļu uz Dzidru", tone: "ready" };
   }
   return { type: "wait", label: "Turpini fermentāciju un veic mērījumu", tone: "normal" };
 }
