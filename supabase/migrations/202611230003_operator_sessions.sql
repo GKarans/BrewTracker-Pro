@@ -37,8 +37,8 @@ begin
   perform pg_advisory_xact_lock(hashtext(target_brewery_id::text || target_operator_id::text));
   select * into target_operator from public.operators
   where id = target_operator_id and brewery_id = target_brewery_id and is_active;
-  select count(*) into recent_failures from public.operator_auth_attempts
-  where brewery_id = target_brewery_id and operator_id = target_operator_id
+  select count(*) into recent_failures from public.operator_auth_attempts a
+  where a.brewery_id = target_brewery_id and a.operator_id = target_operator_id
     and not succeeded and attempted_at > now() - interval '15 minutes';
   if recent_failures >= 5 then raise exception 'PIN temporarily locked. Try again in 15 minutes.'; end if;
   if target_operator.id is null or target_operator.pin_hash <> extensions.crypt(operator_pin, target_operator.pin_hash) then
@@ -50,15 +50,15 @@ begin
   end if;
   insert into public.operator_auth_attempts (brewery_id, operator_id, succeeded)
   values (target_brewery_id, target_operator_id, true);
-  delete from public.operator_auth_attempts where brewery_id = target_brewery_id
-    and operator_id = target_operator_id and not succeeded;
-  delete from public.operator_auth_attempts where brewery_id = target_brewery_id
-    and operator_id = target_operator_id and attempted_at < now() - interval '24 hours';
-  update public.operator_sessions set revoked_at = now()
-  where brewery_id = target_brewery_id and operator_id = target_operator_id
+  delete from public.operator_auth_attempts a where a.brewery_id = target_brewery_id
+    and a.operator_id = target_operator_id and not a.succeeded;
+  delete from public.operator_auth_attempts a where a.brewery_id = target_brewery_id
+    and a.operator_id = target_operator_id and a.attempted_at < now() - interval '24 hours';
+  update public.operator_sessions s set revoked_at = now()
+  where s.brewery_id = target_brewery_id and s.operator_id = target_operator_id
     and revoked_at is null and expires_at > now();
-  delete from public.operator_sessions where brewery_id = target_brewery_id
-    and (expires_at <= now() or revoked_at is not null) and created_at < now() - interval '24 hours';
+  delete from public.operator_sessions s where s.brewery_id = target_brewery_id
+    and (s.expires_at <= now() or s.revoked_at is not null) and s.created_at < now() - interval '24 hours';
   raw_token := encode(extensions.gen_random_bytes(32), 'hex');
   insert into public.operator_sessions (brewery_id, operator_id, token_hash, expires_at)
   values (target_brewery_id, target_operator_id, encode(extensions.digest(raw_token, 'sha256'), 'hex'), token_expires_at);
