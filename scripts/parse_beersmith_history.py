@@ -186,6 +186,24 @@ def parse_measurements(body: str, fallback_year: int, brew_month: int, brew_date
     # retains any additional BeerSmith wording and dates.
     deduplicated: dict[str, dict] = {}
     for action in actions:
+        # BeerSmith notes often place the measurement and the action on two
+        # separate lines (for example "03.11 1023" followed by
+        # "03.11 ciet").  It is safe to join them only by their shared day;
+        # never borrow a value from another day.
+        if action["gravity"] is None:
+            same_day = next(
+                (
+                    measurement for measurement in measurements
+                    if measurement["measuredAt"][:10] == action["performedAt"][:10]
+                    and measurement["gravity"] is not None
+                ),
+                None,
+            )
+            if same_day:
+                action["gravity"] = same_day["gravity"]
+                action["ph"] = same_day["ph"]
+                action["temperature"] = same_day["temperature"]
+                action["pressure"] = same_day["pressure"]
         if action["type"] == "dry_hop":
             deduplicated.setdefault("dry_hop", action)
         else:
@@ -266,6 +284,19 @@ def parse_group(header: re.Match[str], body_parts: list[str]) -> dict:
     # records and must never create a false live tank occupancy or overdue work.
     og_target = round(sum(og_values) / len(og_values)) if og_values else 1050
     final_gravity = next((item["gravity"] for item in reversed(packaging) if item["gravity"] is not None), None)
+    if final_gravity is None:
+        # A final filling line is frequently absent from legacy cards.  The
+        # last actual fermentation measurement is still useful as an observed
+        # historical endpoint, while the full note remains the source of
+        # truth.  Skip the added wort-in-tank start point.
+        final_gravity = next(
+            (
+                item["gravity"] for item in reversed(measurements)
+                if item["gravity"] is not None
+                and not item["note"].startswith("Misas mērījums")
+            ),
+            None,
+        )
     cool_action = next((item for item in reversed(actions) if item["type"] == "cool" and item["gravity"] is not None), None)
     spund_action = next((item for item in actions if item["type"] == "spund" and item["gravity"] is not None), None)
     dry_hop = any(item["type"] == "dry_hop" for item in actions)
