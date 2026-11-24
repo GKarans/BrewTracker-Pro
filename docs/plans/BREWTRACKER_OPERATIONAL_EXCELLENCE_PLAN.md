@@ -16,7 +16,7 @@ Operators can see who owns every brewery task, safely detect abnormal measuremen
 - Carbonation/manometer output is advisory and fail-closed: no pressure target appears until vessel limits, pressure basis, current CO₂, temperature, headspace, and expected terminal fermentation are known.
 - Brewery operating baseline: a fully closed valve is observed to reach 2 bar and the vessels are operated as capable of 2 bar. Treat 2 bar as a configured operational ceiling, not certified MAWP evidence; a lower vessel/PRV/device limit always wins.
 - The centrifuge liter counter records gross throughput, including beer/product and liquid discarded during discharge/solids cleaning. It is not a direct reading of beer received in Dzidra.
-- Initial estimated residues: approximately 150 L remains in the boil kettle, 200 L in a 4 t fermenter, and 350 L in an 8 t fermenter. Store these as estimates until replaced by measured values.
+- Initial estimated residues: approximately 150 L remains in the boil kettle after each 2 t brew. Until measured values replace the estimate, use 300 L total kettle residue for a 4 t batch (two 2 t brews) and 600 L for an 8 t batch (four 2 t brews). Fermenter estimates remain 200 L in a 4 t fermenter and 350 L in an 8 t fermenter.
 - Routine deletion becomes reversible soft deletion. Permanent purge is separate and requires a current export/backup.
 - Monday backup is a persisted maintenance task. The browser cannot silently download a file; an operator explicitly downloads and acknowledges it.
 
@@ -274,7 +274,7 @@ Operators can see who owns every brewery task, safely detect abnormal measuremen
 5. Compute each 8 t filtering cycle independently, then aggregate; never subtract the same source volume twice.
 6. Add a separate loss-analysis view by beer, volume class, and process profile. Operator comparison is permitted only after normalization and minimum sample counts, and must be framed as process comparison rather than blame.
 7. Seed editable estimated residue defaults:
-   - boil kettle: 150 L per applicable brew/kettle cycle;
+   - boil kettle: 150 L after each 2 t brew/kettle cycle (fallback totals: 300 L for 4 t and 600 L for 8 t);
    - 4 t fermenter heel/yeast: 200 L;
    - 8 t fermenter heel/yeast: 350 L.
    Every derived result labels estimated versus measured inputs. A measured value overrides the default without deleting the estimate history.

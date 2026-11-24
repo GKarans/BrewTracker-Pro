@@ -49,34 +49,44 @@ export async function fetchRemoteState(localState, breweryId) {
   };
 }
 
-export async function syncEvent(state, event, breweryId) {
+export async function syncEvent(state, event, breweryId, sessionToken) {
   if (!navigator.onLine) return false;
+  if (!sessionToken || !event.operatorId) throw new Error("Operatora sesija nav pieejama sinhronizācijai.");
+  let payload;
   if (event.entity === "batch" && event.operation === "delete") {
-    throwOnError(await supabase.from("batches").delete().eq("id", event.entityId).eq("brewery_id", breweryId));
-    return true;
-  }
-  if (event.entity === "batch") {
+    payload = { entity_id: event.entityId };
+  } else if (event.entity === "batch") {
     const batch = state.batches.find((item) => item.id === event.entityId);
     const beer = state.beerTypes.find((item) => item.id === batch?.beerTypeId);
     if (!batch || !beer) return true;
-    throwOnError(await supabase.from("beer_types").upsert({ id: beer.id, brewery_id: breweryId, name: beer.name, og_target: beer.ogTarget, fg_target: beer.fgTarget, spund_gravity: beer.spundGravity, has_dry_hop: beer.hasDryHop, dry_hop_gravity: beer.dryHopGravity, cooling_gravity: beer.coolingGravity, co2_target: beer.co2Target }));
     const fermenter = state.fermenters.find((item) => item.number === batch.fermenterNumber);
     if (!fermenter) throw new Error("Tvertnes dati nav ielādēti no Supabase.");
-    throwOnError(await supabase.from("batches").upsert({ id: batch.id, brewery_id: breweryId, beer_type_id: beer.id, fermenter_id: fermenter.id, batch_number: batch.batchNumber, brew_year: batch.year, sequence_number: batch.sequence, volume_tons: batch.volumeTons, brew_date: batch.brewDate, status: batch.status, og_target: batch.ogTarget, fg_target: batch.fgTarget, spund_gravity: batch.spundGravity, has_dry_hop: batch.hasDryHop, dry_hop_gravity: batch.dryHopGravity, cooling_gravity: batch.coolingGravity, co2_target: batch.co2Target, created_by: batch.createdBy, finished_at: batch.finishedAt || null }));
-    return true;
+    payload = {
+      beer: { id: beer.id, name: beer.name, og_target: beer.ogTarget, fg_target: beer.fgTarget, spund_gravity: beer.spundGravity, has_dry_hop: beer.hasDryHop, dry_hop_gravity: beer.dryHopGravity, cooling_gravity: beer.coolingGravity, co2_target: beer.co2Target },
+      batch: { id: batch.id, beer_type_id: beer.id, fermenter_id: fermenter.id, batch_number: batch.batchNumber, brew_year: batch.year, sequence_number: batch.sequence, volume_tons: batch.volumeTons, brew_date: batch.brewDate, status: batch.status, og_target: batch.ogTarget, fg_target: batch.fgTarget, spund_gravity: batch.spundGravity, has_dry_hop: batch.hasDryHop, dry_hop_gravity: batch.dryHopGravity, cooling_gravity: batch.coolingGravity, co2_target: batch.co2Target, finished_at: batch.finishedAt || null },
+    };
+  } else {
+    const batch = state.batches.find((item) => item.measurements.some((child) => child.id === event.entityId) || item.actions.some((child) => child.id === event.entityId) || (item.packagingRuns || []).some((child) => child.id === event.entityId));
+    if (!batch) return true;
+    if (event.entity === "measurement") {
+      const item = batch.measurements.find((child) => child.id === event.entityId);
+      payload = { item: { id: item.id, client_id: item.id, batch_id: batch.id, measured_at: item.measuredAt, gravity: item.gravity, ph: item.ph, temperature_c: item.temperature, pressure_bar: item.pressure, note: item.note || null, process_action_id: item.processActionId || null, action_type: item.actionType || null } };
+    } else if (event.entity === "action") {
+      const item = batch.actions.find((child) => child.id === event.entityId);
+      payload = { item: { id: item.id, client_id: item.id, batch_id: batch.id, action_type: item.type, performed_at: item.performedAt, gravity: item.gravity, ph: item.ph, temperature_c: item.temperature, pressure_bar: item.pressure, note: item.note || null } };
+    } else if (event.entity === "packagingRun") {
+      const item = batch.packagingRuns.find((child) => child.id === event.entityId);
+      payload = { item: { id: item.id, client_id: item.clientId || item.id, batch_id: batch.id, run_number: item.runNumber, volume_tons: item.volumeTons, centrifuge_liters: item.centrifugeLiters, status: item.status, filtered_at: item.filteredAt, packaged_at: item.packagedAt, gravity: item.gravity, ph: item.ph, temperature_c: item.temperature, pressure_bar: item.pressure, co2_vol: item.co2Vol } };
+    } else {
+      throw new Error("Neatbalstīts sinhronizācijas ieraksts.");
+    }
   }
-  const batch = state.batches.find((item) => item.measurements.some((child) => child.id === event.entityId) || item.actions.some((child) => child.id === event.entityId) || (item.packagingRuns || []).some((child) => child.id === event.entityId));
-  if (!batch) return true;
-  if (event.entity === "measurement") {
-    const item = batch.measurements.find((child) => child.id === event.entityId);
-    throwOnError(await supabase.from("measurements").upsert({ id: item.id, client_id: item.id, batch_id: batch.id, operator_id: item.operatorId, measured_at: item.measuredAt, gravity: item.gravity, ph: item.ph, temperature_c: item.temperature, pressure_bar: item.pressure, note: item.note || null, process_action_id: item.processActionId || null }));
-  } else if (event.entity === "action") {
-    const item = batch.actions.find((child) => child.id === event.entityId);
-    throwOnError(await supabase.from("process_actions").upsert({ id: item.id, client_id: item.id, batch_id: batch.id, operator_id: item.operatorId, action_type: item.type, performed_at: item.performedAt, gravity: item.gravity, ph: item.ph, temperature_c: item.temperature, pressure_bar: item.pressure, note: item.note || null }, { onConflict: "batch_id,action_type" }));
-  } else if (event.entity === "packagingRun") {
-    const item = batch.packagingRuns.find((child) => child.id === event.entityId);
-    throwOnError(await supabase.from("packaging_runs").upsert({ id: item.id, client_id: item.clientId || item.id, batch_id: batch.id, run_number: item.runNumber, volume_tons: item.volumeTons, centrifuge_liters: item.centrifugeLiters, status: item.status, filtered_at: item.filteredAt, packaged_at: item.packagedAt, gravity: item.gravity, ph: item.ph, temperature_c: item.temperature, pressure_bar: item.pressure, co2_vol: item.co2Vol, operator_id: item.operatorId }, { onConflict: "id" }));
-    if (batch.status === "finished") throwOnError(await supabase.from("batches").update({ status: "finished", finished_at: batch.finishedAt }).eq("id", batch.id));
-  }
+  throwOnError(await supabase.rpc("sync_operator_event", {
+    session_token: sessionToken,
+    expected_operator_id: event.operatorId,
+    entity_type: event.entity,
+    operation_type: event.operation,
+    payload,
+  }));
   return true;
 }

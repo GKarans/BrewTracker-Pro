@@ -14,20 +14,78 @@ let authMode = "login";
 let brewery = null;
 let operatorUnlocked = false;
 
+const OPERATOR_ID_SESSION_KEY = "brewtracker-operator-id";
+const OPERATOR_TOKEN_SESSION_KEY = "brewtracker-operator-session";
+
+function clearOperatorSession() {
+  sessionStorage.removeItem(OPERATOR_ID_SESSION_KEY);
+  sessionStorage.removeItem(OPERATOR_TOKEN_SESSION_KEY);
+  operatorUnlocked = false;
+}
+
+function operatorSessionToken() {
+  return sessionStorage.getItem(OPERATOR_TOKEN_SESSION_KEY);
+}
+
+async function revokeCurrentOperatorSession() {
+  const token = operatorSessionToken();
+  if (token && isSupabaseConfigured && !navigator.onLine) {
+    throw new Error("Lai droši beigtu operatora sesiju, nepieciešams interneta savienojums.");
+  }
+  if (token && isSupabaseConfigured) {
+    const { error } = await supabase.rpc("revoke_operator_session", { session_token: token });
+    if (error) throw error;
+  }
+  clearOperatorSession();
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>'"]/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
+  })[character]);
+}
+
+function rememberOperatorSession(operatorId, sessionToken) {
+  sessionStorage.setItem(OPERATOR_ID_SESSION_KEY, operatorId);
+  sessionStorage.setItem(OPERATOR_TOKEN_SESSION_KEY, sessionToken);
+}
+
+async function createOperatorSession(operatorId, pin) {
+  const { data, error } = await supabase.rpc("create_operator_session", {
+    target_operator_id: operatorId,
+    operator_pin: pin,
+  });
+  const session = Array.isArray(data) ? data[0] : data;
+  if (error) throw error;
+  return session?.session_token ? session : null;
+}
+
+async function revalidateOpenOperatorSession() {
+  if (!operatorUnlocked || !navigator.onLine || !authSession) return;
+  const token = operatorSessionToken();
+  if (!token) { clearOperatorSession(); operatorUnlockPage(); return; }
+  const { data, error } = await supabase.rpc("validate_operator_session", { session_token: token });
+  if (error) return; // Preserve the token on retryable network/server failures.
+  if (data !== state.activeOperatorId) {
+    clearOperatorSession();
+    operatorUnlockPage("Operatora sesija ir beigusies. Ievadi PIN, lai turpinātu.");
+  }
+}
+
 function icon(name, size = 20) {
   return createElement(icons[name], { width: size, height: size, "stroke-width": 2.2 }).outerHTML;
 }
 
 function authPage(message = "", isError = false) {
-  app.innerHTML = `<main class="auth-page"><section class="auth-card"><div class="auth-brand"><span class="brand-mark">BT</span><div><h1>BrewTracker Pro</h1><p>Alus fermentācijas procesa asistents</p></div></div><div class="auth-tabs"><button type="button" data-auth-mode="login" class="${authMode === "login" ? "active" : ""}">Ieiet</button><button type="button" data-auth-mode="signup" class="${authMode === "signup" ? "active" : ""}">Reģistrēties</button></div><form id="auth-form"><div class="field"><label>E-pasts</label><input name="email" type="email" autocomplete="email" required placeholder="daritava@epasts.lv"></div><div class="field"><label>Parole</label><input name="password" type="password" autocomplete="${authMode === "login" ? "current-password" : "new-password"}" minlength="8" required placeholder="Vismaz 8 rakstzīmes"></div>${authMode === "signup" ? `<div class="field"><label>Atkārto paroli</label><input name="passwordConfirm" type="password" autocomplete="new-password" minlength="8" required></div>` : ""}<div class="auth-message ${isError ? "error" : ""}">${message}</div><button class="primary full" type="submit">${authMode === "login" ? "Ieiet aplikācijā" : "Izveidot kontu"}</button></form><p class="auth-note">Šis būs viens kopīgs alus darītavas konts. Darbinieku darbības tiks nošķirtas ar operatoru profiliem un PIN.</p></section></main>`;
+  app.innerHTML = `<main class="auth-page"><section class="auth-card"><div class="auth-brand"><span class="brand-mark">BT</span><div><h1>BrewTracker Pro</h1><p>Alus fermentācijas procesa asistents</p></div></div><div class="auth-tabs"><button type="button" data-auth-mode="login" class="${authMode === "login" ? "active" : ""}">Ieiet</button><button type="button" data-auth-mode="signup" class="${authMode === "signup" ? "active" : ""}">Reģistrēties</button></div><form id="auth-form"><div class="field"><label>E-pasts</label><input name="email" type="email" autocomplete="email" required placeholder="daritava@epasts.lv"></div><div class="field"><label>Parole</label><input name="password" type="password" autocomplete="${authMode === "login" ? "current-password" : "new-password"}" minlength="8" required placeholder="Vismaz 8 rakstzīmes"></div>${authMode === "signup" ? `<div class="field"><label>Atkārto paroli</label><input name="passwordConfirm" type="password" autocomplete="new-password" minlength="8" required></div>` : ""}<div class="auth-message ${isError ? "error" : ""}">${escapeHtml(message)}</div><button class="primary full" type="submit">${authMode === "login" ? "Ieiet aplikācijā" : "Izveidot kontu"}</button></form><p class="auth-note">Šis būs viens kopīgs alus darītavas konts. Darbinieku darbības tiks nošķirtas ar operatoru profiliem un PIN.</p></section></main>`;
 }
 
 function onboardingPage(message = "") {
-  app.innerHTML = `<main class="auth-page"><section class="auth-card"><div class="auth-brand"><span class="brand-mark">BT</span><div><h1>Sākotnējā iestatīšana</h1><p>Izveido alus darītavu un pirmo operatoru</p></div></div><form id="onboarding-form"><div class="field"><label>Alus darītavas nosaukums</label><input name="breweryName" required value="Labietis" autocomplete="organization"></div><div class="field"><label>Pirmā operatora vārds</label><input name="operatorName" required autocomplete="name" placeholder="Piemēram, Jānis"></div><div class="field"><label>Operatora PIN</label><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" required placeholder="4–8 cipari"></div><div class="field"><label>Atkārto PIN</label><input name="pinConfirm" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" required></div><div class="auth-message error">${message}</div><button class="primary full" type="submit">Izveidot darba vidi</button></form><p class="auth-note">Tiks automātiski izveidotas 13 fermentācijas tvertnes. Vēlāk varēsi pievienot pārējos operatorus.</p></section></main>`;
+  app.innerHTML = `<main class="auth-page"><section class="auth-card"><div class="auth-brand"><span class="brand-mark">BT</span><div><h1>Sākotnējā iestatīšana</h1><p>Izveido alus darītavu un pirmo operatoru</p></div></div><form id="onboarding-form"><div class="field"><label>Alus darītavas nosaukums</label><input name="breweryName" required value="Labietis" autocomplete="organization"></div><div class="field"><label>Pirmā operatora vārds</label><input name="operatorName" required autocomplete="name" placeholder="Piemēram, Jānis"></div><div class="field"><label>Operatora PIN</label><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" required placeholder="4–8 cipari"></div><div class="field"><label>Atkārto PIN</label><input name="pinConfirm" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" required></div><div class="auth-message error">${escapeHtml(message)}</div><button class="primary full" type="submit">Izveidot darba vidi</button></form><p class="auth-note">Tiks automātiski izveidotas 13 fermentācijas tvertnes. Vēlāk varēsi pievienot pārējos operatorus.</p></section></main>`;
 }
 
 function operatorUnlockPage(message = "") {
-  app.innerHTML = `<main class="auth-page"><section class="auth-card"><div class="auth-brand"><span class="brand-mark">BT</span><div><h1>Kas šobrīd strādā?</h1><p>${brewery?.name || "BrewTracker Pro"}</p></div></div><form id="operator-unlock-form"><div class="field"><label>Operators</label><select name="operatorId" required><option value="">Izvēlies savu profilu</option>${state.operators.filter((operator) => operator.is_active !== false).map((operator) => `<option value="${operator.id}">${operator.name}</option>`).join("")}</select></div><div class="field"><label>PIN</label><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" required placeholder="••••"></div><div class="auth-message error">${message}</div><button class="primary full" type="submit">Turpināt</button><button class="text-button auth-logout" type="button" data-auth-logout>Iziet no kopīgā konta</button></form></section></main>`;
+  app.innerHTML = `<main class="auth-page"><section class="auth-card"><div class="auth-brand"><span class="brand-mark">BT</span><div><h1>Kas šobrīd strādā?</h1><p>${escapeHtml(brewery?.name || "BrewTracker Pro")}</p></div></div><form id="operator-unlock-form"><div class="field"><label>Operators</label><select name="operatorId" required><option value="">Izvēlies savu profilu</option>${state.operators.filter((operator) => operator.is_active !== false).map((operator) => `<option value="${escapeHtml(operator.id)}">${escapeHtml(operator.name)}</option>`).join("")}</select></div><div class="field"><label>PIN</label><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" required placeholder="••••"></div><div class="auth-message error">${escapeHtml(message)}</div><button class="primary full" type="submit">Turpināt</button><button class="text-button auth-logout" type="button" data-auth-logout>Iziet no kopīgā konta</button></form></section></main>`;
 }
 
 async function loadWorkspace() {
@@ -54,11 +112,25 @@ async function loadWorkspace() {
   const { data: operators, error: operatorError } = await supabase.from("operators").select("id, name, is_active").order("created_at");
   if (operatorError) { operatorUnlockPage(`Neizdevās ielādēt operatorus: ${operatorError.message}`); return; }
   state.operators = operators || [];
-  const rememberedOperator = sessionStorage.getItem("brewtracker-operator-id");
-  if (rememberedOperator && state.operators.some((operator) => operator.id === rememberedOperator)) {
-    state.activeOperatorId = rememberedOperator;
+  const rememberedOperator = sessionStorage.getItem(OPERATOR_ID_SESSION_KEY);
+  const rememberedToken = sessionStorage.getItem(OPERATOR_TOKEN_SESSION_KEY);
+  if (rememberedOperator && rememberedToken && state.operators.some((operator) => operator.id === rememberedOperator)) {
+    const { data: validatedOperator, error: sessionError } = await supabase.rpc("validate_operator_session", { session_token: rememberedToken });
+    if (!sessionError && validatedOperator === rememberedOperator) {
+      state.activeOperatorId = rememberedOperator;
+      operatorUnlocked = true;
+      state = await saveState(state);
+      await refreshRemoteState();
+      render();
+      return;
+    }
+    if (sessionError) {
+      operatorUnlocked = false;
+      operatorUnlockPage("Sesiju pašlaik nevar pārbaudīt. Savienojuma kļūdas dēļ tā nav dzēsta; mēģini vēlreiz.");
+      return;
+    }
   }
-  operatorUnlocked = false;
+  clearOperatorSession();
   operatorUnlockPage();
 }
 
@@ -75,9 +147,17 @@ async function submitOnboarding(form) {
   if (error) { onboardingPage(error.message.includes("Could not find") ? "Nav atrasta sākotnējās iestatīšanas funkcija. Izpildi jaunāko SQL migrāciju." : error.message); return; }
   brewery = { id: result.brewery_id, name: result.brewery_name };
   state.operators = [{ id: result.operator_id, name: result.operator_name, is_active: true }];
+  let operatorSession;
+  try {
+    operatorSession = await createOperatorSession(result.operator_id, data.pin);
+  } catch (sessionError) {
+    operatorUnlockPage(`Darba vide izveidota, bet operatora sesiju neizdevās izveidot: ${sessionError.message}`);
+    return;
+  }
+  if (!operatorSession) { operatorUnlockPage("Darba vide izveidota, bet PIN sesiju neizdevās izveidot."); return; }
   state.activeOperatorId = result.operator_id;
   operatorUnlocked = true;
-  sessionStorage.setItem("brewtracker-operator-id", result.operator_id);
+  rememberOperatorSession(result.operator_id, operatorSession.session_token);
   state = await saveState(state);
   await refreshRemoteState();
   render();
@@ -88,11 +168,17 @@ async function submitOperatorUnlock(form) {
   const data = Object.fromEntries(new FormData(form));
   const button = form.querySelector('button[type="submit"]');
   button.disabled = true; button.textContent = "Pārbauda…";
-  const { data: valid, error } = await supabase.rpc("verify_operator", { operator_id: data.operatorId, operator_pin: data.pin });
-  if (error || !valid) { operatorUnlockPage(error ? `PIN pārbaudes kļūda: ${error.message}` : "Nepareizs PIN kods."); return; }
+  let operatorSession;
+  try {
+    operatorSession = await createOperatorSession(data.operatorId, data.pin);
+  } catch (error) {
+    operatorUnlockPage(`PIN pārbaudes kļūda: ${error.message}`);
+    return;
+  }
+  if (!operatorSession) { operatorUnlockPage("Nepareizs PIN kods."); return; }
   state.activeOperatorId = data.operatorId;
   operatorUnlocked = true;
-  sessionStorage.setItem("brewtracker-operator-id", data.operatorId);
+  rememberOperatorSession(data.operatorId, operatorSession.session_token);
   state = await saveState(state);
   await refreshRemoteState();
   render();
@@ -101,8 +187,41 @@ async function submitOperatorUnlock(form) {
 async function refreshRemoteState() {
   if (!navigator.onLine || !brewery || !operatorUnlocked) return;
   try {
+    const token = operatorSessionToken();
+    if (!token) throw new Error("Operatora sesija nav pieejama.");
+    const legacyEvents = state.pendingSync.filter((event) => !event.operatorId);
+    if (legacyEvents.length) {
+      const legacySummary = legacyEvents.slice(0, 5).map((event) => {
+        const relatedBatch = state.batches.find((batch) => (
+          batch.id === event.entityId
+          || batch.measurements.some((entry) => entry.id === event.entityId)
+          || batch.actions.some((entry) => entry.id === event.entityId)
+          || (batch.packagingRuns || []).some((entry) => entry.id === event.entityId)
+        ));
+        const beerName = state.beerTypes.find((beer) => beer.id === relatedBatch?.beerTypeId)?.name;
+        const context = relatedBatch ? `#${relatedBatch.batchNumber}${beerName ? ` ${beerName}` : ""}` : event.entity;
+        return `${event.createdAt ? formatDate(event.createdAt) : "Datums nav zināms"} · ${context}`;
+      }).join("\n");
+      const remainingCount = Math.max(0, legacyEvents.length - 5);
+      const takeOwnership = window.confirm(
+        `${legacyEvents.length} vecāki bezsaistes ieraksti nav piesaistīti operatoram:\n\n${legacySummary}`
+        + `${remainingCount ? `\n…un vēl ${remainingCount}` : ""}\n\n`
+        + `Vai apstiprini to piesaisti operatoram “${currentOperator()?.name || "Operators"}” un sinhronizāciju?`,
+      );
+      if (!takeOwnership) {
+        alert("Vecie bezsaistes ieraksti netika nosūtīti. Tie paliek šajā ierīcē līdz apstiprināšanai.");
+        return;
+      }
+      const confirmedAt = new Date().toISOString();
+      state.pendingSync = state.pendingSync.map((event) => (event.operatorId ? event : {
+        ...event,
+        operatorId: state.activeOperatorId,
+        legacyAttribution: { operatorId: state.activeOperatorId, confirmedAt, confirmedByUser: true },
+      }));
+      state = await saveState(state);
+    }
     for (const event of [...state.pendingSync]) {
-      await syncEvent(state, event, brewery.id);
+      await syncEvent(state, event, brewery.id, token);
       state.pendingSync = state.pendingSync.filter((item) => item.id !== event.id);
     }
     const operatorId = state.activeOperatorId;
@@ -117,15 +236,20 @@ async function refreshRemoteState() {
 }
 
 async function saveAndSync(event) {
-  state = await saveState(state, event);
+  const attributedEvent = { ...event, operatorId: state.activeOperatorId };
+  state = await saveState(state, attributedEvent);
   if (!navigator.onLine || !brewery || !operatorUnlocked) return;
   const queued = state.pendingSync.at(-1);
   try {
-    await syncEvent(state, queued, brewery.id);
+    await syncEvent(state, queued, brewery.id, operatorSessionToken());
     state.pendingSync = state.pendingSync.filter((item) => item.id !== queued.id);
     state = await saveState(state);
   } catch (error) {
     console.error("Change queued for synchronization", error);
+    if (/session invalid|session expired|does not match offline event/i.test(error.message || "")) {
+      clearOperatorSession();
+      operatorUnlockPage("Operatora sesija ir beigusies. Ievadi PIN, lai droši sinhronizētu izmaiņas.");
+    }
   }
 }
 
@@ -188,7 +312,7 @@ function showDailyTasks(sendSystemNotification = false) {
   const tasks = dailyTaskItems();
   if (!tasks.length) return;
   const dialog = document.createElement("dialog");
-  dialog.innerHTML = `<div class="dialog-card daily-dialog"><button class="dialog-close" data-close-daily>${icon("X")}</button><p class="eyebrow">Šodienas darbi</p><h2>${tasks.length} ${tasks.length === 1 ? "uzdevums" : "uzdevumi"}</h2><p>Pārbaudi un izpildi darbus, kas šodien gaida fermentorveikalā.</p><div class="daily-task-list">${tasks.map((task) => `<button data-daily-batch="${task.batch.id}" class="daily-task ${task.tone}"><span class="tank-number">${task.batch.fermenterNumber}</span><span><strong>${task.beerName}</strong><small>#${task.batch.batchNumber} · ${task.label}</small></span>${icon("ChevronRight")}</button>`).join("")}</div><button class="secondary full" data-close-daily>Aizvērt</button></div>`;
+  dialog.innerHTML = `<div class="dialog-card daily-dialog"><button class="dialog-close" data-close-daily>${icon("X")}</button><p class="eyebrow">Šodienas darbi</p><h2>${tasks.length} ${tasks.length === 1 ? "uzdevums" : "uzdevumi"}</h2><p>Pārbaudi un izpildi darbus, kas šodien gaida fermentorveikalā.</p><div class="daily-task-list">${tasks.map((task) => `<button data-daily-batch="${escapeHtml(task.batch.id)}" class="daily-task ${escapeHtml(task.tone)}"><span class="tank-number">${escapeHtml(task.batch.fermenterNumber)}</span><span><strong>${escapeHtml(task.beerName)}</strong><small>#${escapeHtml(task.batch.batchNumber)} · ${escapeHtml(task.label)}</small></span>${icon("ChevronRight")}</button>`).join("")}</div><button class="secondary full" data-close-daily>Aizvērt</button></div>`;
   document.body.append(dialog);
   dialog.addEventListener("close", () => dialog.remove());
   dialog.addEventListener("click", (event) => {
@@ -260,7 +384,7 @@ function urlBase64ToUint8Array(value) {
 
 function shell(content, title = "BrewTracker") {
   const taskCount = dailyTaskItems().length;
-  app.innerHTML = `<div class="app-shell"><header class="topbar"><button class="brand" data-route="dashboard"><span class="brand-mark">BT</span><span>${title}</span></button><nav class="desktop-nav"><button data-route="dashboard" class="${route === "dashboard" ? "active" : ""}">${icon("LayoutDashboard", 17)} Tvertnes</button><button data-route="tasks" class="${route === "tasks" ? "active" : ""}">${icon("ListTodo", 17)} Darbi</button><button data-route="history" class="${route === "history" ? "active" : ""}">${icon("History", 17)} Vēsture</button><button data-route="analytics" class="${route === "analytics" ? "active" : ""}">${icon("ChartNoAxesCombined", 17)} Analīze</button><button data-route="settings" class="${route === "settings" ? "active" : ""}">${icon("Settings", 17)} Iestatījumi</button></nav>${taskCount ? `<button class="task-bell" data-show-daily-tasks title="Šodienas darbi">${icon("BellRing", 18)}<span>${taskCount}</span></button>` : ""}<div class="network ${navigator.onLine ? "online" : "offline"}">${navigator.onLine ? "Tiešsaistē" : "Bezsaistē"}</div><button class="operator" data-action="operators">${icon("UserRound", 18)} ${currentOperator()?.name || "Operators"}</button></header>${content}<nav class="bottom-nav"><button data-route="dashboard" class="${route === "dashboard" ? "active" : ""}">${icon("LayoutDashboard")}<span>Tvertnes</span></button><button data-route="tasks" class="${route === "tasks" ? "active" : ""}">${icon("ListTodo")}<span>Darbi</span></button><button data-route="history" class="${route === "history" ? "active" : ""}">${icon("History")}<span>Vēsture</span></button><button data-route="analytics" class="${route === "analytics" ? "active" : ""}">${icon("ChartNoAxesCombined")}<span>Analīze</span></button><button data-route="settings" class="${route === "settings" ? "active" : ""}">${icon("Settings")}<span>Iestatījumi</span></button></nav></div>`;
+  app.innerHTML = `<div class="app-shell"><header class="topbar"><button class="brand" data-route="dashboard"><span class="brand-mark">BT</span><span>${escapeHtml(title)}</span></button><nav class="desktop-nav"><button data-route="dashboard" class="${route === "dashboard" ? "active" : ""}">${icon("LayoutDashboard", 17)} Tvertnes</button><button data-route="tasks" class="${route === "tasks" ? "active" : ""}">${icon("ListTodo", 17)} Darbi</button><button data-route="history" class="${route === "history" ? "active" : ""}">${icon("History", 17)} Vēsture</button><button data-route="analytics" class="${route === "analytics" ? "active" : ""}">${icon("ChartNoAxesCombined", 17)} Analīze</button><button data-route="settings" class="${route === "settings" ? "active" : ""}">${icon("Settings", 17)} Iestatījumi</button></nav>${taskCount ? `<button class="task-bell" data-show-daily-tasks title="Šodienas darbi">${icon("BellRing", 18)}<span>${taskCount}</span></button>` : ""}<div class="network ${navigator.onLine ? "online" : "offline"}">${navigator.onLine ? "Tiešsaistē" : "Bezsaistē"}</div><button class="operator" data-action="operators">${icon("UserRound", 18)} ${escapeHtml(currentOperator()?.name || "Operators")}</button></header>${content}<nav class="bottom-nav"><button data-route="dashboard" class="${route === "dashboard" ? "active" : ""}">${icon("LayoutDashboard")}<span>Tvertnes</span></button><button data-route="tasks" class="${route === "tasks" ? "active" : ""}">${icon("ListTodo")}<span>Darbi</span></button><button data-route="history" class="${route === "history" ? "active" : ""}">${icon("History")}<span>Vēsture</span></button><button data-route="analytics" class="${route === "analytics" ? "active" : ""}">${icon("ChartNoAxesCombined")}<span>Analīze</span></button><button data-route="settings" class="${route === "settings" ? "active" : ""}">${icon("Settings")}<span>Iestatījumi</span></button></nav></div>`;
 }
 
 function dashboard() {
@@ -274,7 +398,7 @@ function tankCard(number) {
     const activeRun = activePackagingRun();
     const beer = activeRun && state.beerTypes.find((item) => item.id === activeRun.batch.beerTypeId);
     return activeRun
-      ? `<article class="tank-card brite occupied" data-open-batch="${activeRun.batch.id}"><div class="tank-number">D</div><div class="tank-main"><div class="card-top"><span class="batch-no">DZIDRA · ${activeRun.volumeTons} t</span><span class="days">Cikls ${activeRun.runNumber}</span></div><h2>${beer?.name || "Alus"}</h2><p>Izfiltrēts, gaida pildīšanu</p><div class="recommendation urgent">${icon("PackageCheck", 18)} Sapildīt no Dzidras</div></div>${icon("ChevronRight")}</article>`
+      ? `<article class="tank-card brite occupied" data-open-batch="${activeRun.batch.id}"><div class="tank-number">D</div><div class="tank-main"><div class="card-top"><span class="batch-no">DZIDRA · ${activeRun.volumeTons} t</span><span class="days">Cikls ${activeRun.runNumber}</span></div><h2>${escapeHtml(beer?.name || "Alus")}</h2><p>Izfiltrēts, gaida pildīšanu</p><div class="recommendation urgent">${icon("PackageCheck", 18)} Sapildīt no Dzidras</div></div>${icon("ChevronRight")}</article>`
       : `<article class="tank-card brite empty"><div class="tank-number">D</div><div><h2>Dzidra</h2><p>4 t Brite Tank · brīva</p></div></article>`;
   }
   const batch = activeBatches().find((item) => item.fermenterNumber === number);
@@ -283,14 +407,15 @@ function tankCard(number) {
   const latest = batch.measurements.at(-1);
   const recommendation = getRecommendedAction(batch);
   const remaining = remainingInFermenter(batch);
-  return `<article class="tank-card occupied" data-open-batch="${batch.id}"><div class="tank-number">${number}</div><div class="tank-main"><div class="card-top"><span class="batch-no">#${batch.batchNumber}</span><span class="days">${Math.max(0, Math.floor((Date.now() - new Date(batch.brewDate)) / 86400000))}. diena</span></div><h2>${beer?.name || "Nezināms alus"} <small>${remaining} t${remaining !== Number(batch.volumeTons) ? ` palikušas no ${batch.volumeTons} t` : ""}</small></h2><p>${latest ? `Blīvums ${latest.gravity} · pH ${latest.ph} · ${latest.temperature} °C` : "Vēl nav mērījumu"}</p><div class="recommendation ${recommendation.tone}">${icon(recommendation.tone === "urgent" ? "TriangleAlert" : "CircleCheck", 18)} ${recommendation.label}</div></div>${icon("ChevronRight")}</article>`;
+  return `<article class="tank-card occupied" data-open-batch="${batch.id}"><div class="tank-number">${number}</div><div class="tank-main"><div class="card-top"><span class="batch-no">#${escapeHtml(batch.batchNumber)}</span><span class="days">${Math.max(0, Math.floor((Date.now() - new Date(batch.brewDate)) / 86400000))}. diena</span></div><h2>${escapeHtml(beer?.name || "Nezināms alus")} <small>${remaining} t${remaining !== Number(batch.volumeTons) ? ` palikušas no ${batch.volumeTons} t` : ""}</small></h2><p>${latest ? `Blīvums ${latest.gravity} · pH ${latest.ph} · ${latest.temperature} °C` : "Vēl nav mērījumu"}</p><div class="recommendation ${recommendation.tone}">${icon(recommendation.tone === "urgent" ? "TriangleAlert" : "CircleCheck", 18)} ${recommendation.label}</div></div>${icon("ChevronRight")}</article>`;
 }
 
 function newBatchForm(tank = "") {
   const currentYear = new Date().getFullYear();
   const existingThisYear = state.batches.filter((batch) => batch.year === currentYear);
   const nextSequence = existingThisYear.length ? Math.max(...existingThisYear.map((batch) => batch.sequence)) + 1 : 1;
-  shell(`<main class="narrow"><button class="text-button" data-route="dashboard">${icon("ArrowLeft")} Atpakaļ</button><section class="page-heading"><div><p class="eyebrow">Jauna fermentācija</p><h1>Izveidot partiju</h1></div></section><form id="batch-form" class="form-card"><div class="field full"><label>Alus nosaukums</label><input name="beerName" list="beer-types" required autocomplete="off"><datalist id="beer-types">${state.beerTypes.map((beer) => `<option value="${beer.name}">`).join("")}</datalist><small>Esošam nosaukumam tiks izmantoti saglabātie sliekšņi.</small></div><div class="field"><label>Tilpums, tonnas</label><input name="volumeTons" type="number" min="0.1" step="0.1" required></div><div class="field"><label>Vārīšanas datums</label><input name="brewDate" type="date" value="${today()}" required></div><div class="field"><label>Kārtas numurs gadā</label><input name="sequence" type="number" min="1" max="999" value="${nextSequence}" required></div><div class="field"><label>Fermentācijas tvertne</label><select name="fermenterNumber" required><option value="">Izvēlies</option>${FERMENTERS.filter((item) => item.type === "fermenter").map((item) => `<option value="${item.number}" ${String(item.number) === String(tank) ? "selected" : ""} ${activeBatches().some((batch) => batch.fermenterNumber === item.number) ? "disabled" : ""}>${item.name} · max ${item.capacityTons} t${activeBatches().some((batch) => batch.fermenterNumber === item.number) ? " — aizņemta" : ""}</option>`).join("")}</select></div><hr><h2 class="full">Procesa sliekšņi</h2><div class="field"><label>Sākotnējais blīvums (OG)</label><input name="ogTarget" inputmode="numeric" placeholder="1056" required></div><div class="field"><label>Gala blīvums (FG)</label><input name="fgTarget" inputmode="numeric" placeholder="1012" required></div><div class="field"><label>Vārstu aizgriezt pie</label><input name="spundGravity" inputmode="numeric" placeholder="1026" required></div><div class="field"><label>Dzesēt uz 0 °C pie</label><input name="coolingGravity" inputmode="numeric" placeholder="1018" required></div><label class="check full"><input name="hasDryHop" type="checkbox"><span>Šim alum ir Dry Hop</span></label><div class="field" id="dry-hop-field" hidden><label>Dry Hop pie blīvuma</label><input name="dryHopGravity" inputmode="numeric" placeholder="1022"></div><div class="field"><label>Mērķa CO₂, vol</label><input name="co2Target" type="number" min="1" max="4" step="0.1" value="2.4" required></div><div class="form-error full" id="form-error"></div><button class="primary full" type="submit">Izveidot partiju</button></form></main>`, "Jauna partija");
+  const beerOptions = state.beerTypes.map((beer) => `<option value="${escapeHtml(beer.name)}">`).join("");
+  shell(`<main class="narrow"><button class="text-button" data-route="dashboard">${icon("ArrowLeft")} Atpakaļ</button><section class="page-heading"><div><p class="eyebrow">Jauna fermentācija</p><h1>Izveidot partiju</h1></div></section><form id="batch-form" class="form-card"><div class="field full"><label>Alus nosaukums</label><input name="beerName" list="beer-types" required autocomplete="off"><datalist id="beer-types">${beerOptions}</datalist><small>Esošam nosaukumam tiks izmantoti saglabātie sliekšņi.</small></div><div class="field"><label>Tilpums, tonnas</label><input name="volumeTons" type="number" min="0.1" step="0.1" required></div><div class="field"><label>Vārīšanas datums</label><input name="brewDate" type="date" value="${today()}" required></div><div class="field"><label>Kārtas numurs gadā</label><input name="sequence" type="number" min="1" max="999" value="${nextSequence}" required></div><div class="field"><label>Fermentācijas tvertne</label><select name="fermenterNumber" required><option value="">Izvēlies</option>${FERMENTERS.filter((item) => item.type === "fermenter").map((item) => `<option value="${item.number}" ${String(item.number) === String(tank) ? "selected" : ""} ${activeBatches().some((batch) => batch.fermenterNumber === item.number) ? "disabled" : ""}>${item.name} · max ${item.capacityTons} t${activeBatches().some((batch) => batch.fermenterNumber === item.number) ? " — aizņemta" : ""}</option>`).join("")}</select></div><hr><h2 class="full">Procesa sliekšņi</h2><div class="field"><label>Sākotnējais blīvums (OG)</label><input name="ogTarget" inputmode="numeric" placeholder="1056" required></div><div class="field"><label>Gala blīvums (FG)</label><input name="fgTarget" inputmode="numeric" placeholder="1012" required></div><div class="field"><label>Vārstu aizgriezt pie</label><input name="spundGravity" inputmode="numeric" placeholder="1026" required></div><div class="field"><label>Dzesēt uz 0 °C pie</label><input name="coolingGravity" inputmode="numeric" placeholder="1018" required></div><label class="check full"><input name="hasDryHop" type="checkbox"><span>Šim alum ir Dry Hop</span></label><div class="field" id="dry-hop-field" hidden><label>Dry Hop pie blīvuma</label><input name="dryHopGravity" inputmode="numeric" placeholder="1022"></div><div class="field"><label>Mērķa CO₂, vol</label><input name="co2Target" type="number" min="1" max="4" step="0.1" value="2.4" required></div><div class="form-error full" id="form-error"></div><button class="primary full" type="submit">Izveidot partiju</button></form></main>`, "Jauna partija");
   const checkbox = document.querySelector('[name="hasDryHop"]');
   const beerInput = document.querySelector('[name="beerName"]');
   checkbox.addEventListener("change", () => document.querySelector("#dry-hop-field").hidden = !checkbox.checked);
@@ -328,10 +453,11 @@ async function submitBatch(form) {
 function batchDetail() {
   const batch = state.batches.find((item) => item.id === selectedBatchId);
   if (!batch) { route = "dashboard"; return dashboard(); }
-  const beer = state.beerTypes.find((item) => item.id === batch.beerTypeId);
+  const rawBeer = state.beerTypes.find((item) => item.id === batch.beerTypeId);
+  const beer = { ...rawBeer, name: escapeHtml(rawBeer?.name || "Nezināms alus") };
   const recommendation = getRecommendedAction(batch);
   const stats = calculateHistoryStats(state.batches, batch.beerTypeId);
-  shell(`<main class="narrow"><button class="text-button" data-route="dashboard">${icon("ArrowLeft")} Visas tvertnes</button><section class="batch-hero"><div><span class="batch-no">#${batch.batchNumber} · Tvertne ${batch.fermenterNumber}</span><h1>${beer.name} <small>${remainingInFermenter(batch)} t tvertnē no ${batch.volumeTons} t</small></h1><p>Sākts ${formatDate(batch.brewDate)}</p></div><div class="hero-actions"><span class="status">${batch.status === BATCH_STATUS.FINISHED ? "Pabeigts" : "Aktīvs"}</span><button class="danger-button" data-delete-batch="${batch.id}">${icon("Trash2", 17)} Dzēst partiju</button></div></section><section class="action-banner ${recommendation.tone}"><div>${icon("Sparkles", 24)}<span><small>Ieteicamā darbība</small><strong>${recommendation.label}</strong></span></div></section>${predictionPanel(batch, stats)}<section class="detail-grid"><article class="panel"><div class="panel-title"><h2>Jauns mērījums</h2><span>Var saglabāt bez interneta</span></div><form id="measurement-form" class="measurement-form"><div class="field full"><label>Mērījuma datums un laiks</label><input name="measuredAt" type="datetime-local" value="${localDateTimeValue()}" required></div><div class="field"><label>Blīvums</label><input name="gravity" inputmode="numeric" placeholder="1054" required></div><div class="field"><label>pH</label><input name="ph" type="number" min="0" max="14" step="0.01" placeholder="4.20" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" min="-5" max="50" step="0.1" placeholder="19.5" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" min="0" max="5" step="0.01" placeholder="0.80"></div><div class="field full"><label>Saistītā fermentācijas darbība</label><select name="actionType"><option value="">Nav — tikai mērījums</option><option value="spund">Aizgriezts vārsts</option>${batch.hasDryHop ? `<option value="dry_hop">Pievienots Dry Hop</option>` : ""}<option value="cool">Iestatīta dzesēšana uz 0 °C</option></select></div><div class="field full"><label>Piezīme</label><input name="note" placeholder="Neobligāta piezīme"></div><div class="form-error full" id="measurement-error"></div><button class="primary full">${icon("Save")} Saglabāt mērījumu</button></form></article><article class="panel"><div class="panel-title"><h2>Fermentācijas darbības</h2></div><div class="action-list">${[ACTION_TYPES.SPUND, ...(batch.hasDryHop ? [ACTION_TYPES.DRY_HOP] : []), ACTION_TYPES.COOL].map((type) => actionButton(batch, type)).join("")}</div></article></section>${packagingPanel(batch)}<section class="panel"><div class="panel-title"><h2>Mērījumu vēsture</h2><span>${batch.measurements.length} ieraksti</span></div>${measurementTable(batch)}</section></main>`, beer.name);
+  shell(`<main class="narrow"><button class="text-button" data-route="dashboard">${icon("ArrowLeft")} Visas tvertnes</button><section class="batch-hero"><div><span class="batch-no">#${escapeHtml(batch.batchNumber)} · Tvertne ${escapeHtml(batch.fermenterNumber)}</span><h1>${escapeHtml(beer.name)} <small>${remainingInFermenter(batch)} t tvertnē no ${batch.volumeTons} t</small></h1><p>Sākts ${formatDate(batch.brewDate)}</p></div><div class="hero-actions"><span class="status">${batch.status === BATCH_STATUS.FINISHED ? "Pabeigts" : "Aktīvs"}</span><button class="danger-button" data-delete-batch="${batch.id}">${icon("Trash2", 17)} Dzēst partiju</button></div></section><section class="action-banner ${recommendation.tone}"><div>${icon("Sparkles", 24)}<span><small>Ieteicamā darbība</small><strong>${recommendation.label}</strong></span></div></section>${predictionPanel(batch, stats)}<section class="detail-grid"><article class="panel"><div class="panel-title"><h2>Jauns mērījums</h2><span>Var saglabāt bez interneta</span></div><form id="measurement-form" class="measurement-form"><div class="field full"><label>Mērījuma datums un laiks</label><input name="measuredAt" type="datetime-local" value="${localDateTimeValue()}" required></div><div class="field"><label>Blīvums</label><input name="gravity" inputmode="numeric" placeholder="1054" required></div><div class="field"><label>pH</label><input name="ph" type="number" min="0" max="14" step="0.01" placeholder="4.20" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" min="-5" max="50" step="0.1" placeholder="19.5" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" min="0" max="5" step="0.01" placeholder="0.80"></div><div class="field full"><label>Saistītā fermentācijas darbība</label><select name="actionType"><option value="">Nav — tikai mērījums</option><option value="spund">Aizgriezts vārsts</option>${batch.hasDryHop ? `<option value="dry_hop">Pievienots Dry Hop</option>` : ""}<option value="cool">Iestatīta dzesēšana uz 0 °C</option></select></div><div class="field full"><label>Piezīme</label><input name="note" placeholder="Neobligāta piezīme"></div><div class="form-error full" id="measurement-error"></div><button class="primary full">${icon("Save")} Saglabāt mērījumu</button></form></article><article class="panel"><div class="panel-title"><h2>Fermentācijas darbības</h2></div><div class="action-list">${[ACTION_TYPES.SPUND, ...(batch.hasDryHop ? [ACTION_TYPES.DRY_HOP] : []), ACTION_TYPES.COOL].map((type) => actionButton(batch, type)).join("")}</div></article></section>${packagingPanel(batch)}<section class="panel"><div class="panel-title"><h2>Mērījumu vēsture</h2><span>${batch.measurements.length} ieraksti</span></div>${measurementTable(batch)}</section></main>`, beer.name);
 }
 
 function deleteBatchDialog(batchId) {
@@ -339,7 +465,7 @@ function deleteBatchDialog(batchId) {
   const beer = state.beerTypes.find((item) => item.id === batch?.beerTypeId);
   if (!batch) return;
   const dialog = document.createElement("dialog");
-  dialog.innerHTML = `<form method="dialog" class="dialog-card delete-dialog"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow danger-text">Neatgriezeniska darbība</p><h2>Dzēst partiju #${batch.batchNumber}?</h2><p>Tiks dzēsta partija “${beer?.name || "Nezināms alus"}” un visi tās mērījumi, fermentācijas darbības un pildīšanas cikli.</p><div class="dialog-actions"><button class="secondary" value="cancel">Atcelt</button><button class="danger-button solid" value="delete">${icon("Trash2", 17)} Dzēst partiju</button></div></form>`;
+  dialog.innerHTML = `<form method="dialog" class="dialog-card delete-dialog"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow danger-text">Neatgriezeniska darbība</p><h2>Dzēst partiju #${escapeHtml(batch.batchNumber)}?</h2><p>Tiks dzēsta partija “${escapeHtml(beer?.name || "Nezināms alus")}” un visi tās mērījumi, fermentācijas darbības un pildīšanas cikli.</p><div class="dialog-actions"><button class="secondary" value="cancel">Atcelt</button><button class="danger-button solid" value="delete">${icon("Trash2", 17)} Dzēst partiju</button></div></form>`;
   document.body.append(dialog); dialog.showModal();
   dialog.addEventListener("close", async () => { if (dialog.returnValue === "delete") await deleteBatch(batchId); dialog.remove(); });
 }
@@ -372,7 +498,7 @@ function actionButton(batch, type) {
 
 function measurementTable(batch) {
   if (!batch.measurements.length) return `<div class="empty-state">${icon("Gauge", 34)}<p>Vēl nav neviena mērījuma.</p></div>`;
-  return `<div class="table-wrap"><table><thead><tr><th>Laiks</th><th>Darbība</th><th>Blīvums</th><th>pH</th><th>°C</th><th>bar</th><th>Operators</th></tr></thead><tbody>${[...batch.measurements].reverse().map((item) => `<tr><td>${new Date(item.measuredAt).toLocaleString("lv-LV", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</td><td>${item.actionType ? `<span class="action-tag">${ACTION_LABELS[item.actionType]}</span>` : "—"}</td><td><strong>${item.gravity}</strong></td><td>${item.ph}</td><td>${item.temperature}</td><td>${item.pressure ?? "—"}</td><td>${state.operators.find((op) => op.id === item.operatorId)?.name || "—"}</td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Laiks</th><th>Darbība</th><th>Blīvums</th><th>pH</th><th>°C</th><th>bar</th><th>Operators</th></tr></thead><tbody>${[...batch.measurements].reverse().map((item) => `<tr><td>${new Date(item.measuredAt).toLocaleString("lv-LV", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</td><td>${item.actionType ? `<span class="action-tag">${ACTION_LABELS[item.actionType]}</span>` : "—"}</td><td><strong>${item.gravity}</strong></td><td>${item.ph}</td><td>${item.temperature}</td><td>${item.pressure ?? "—"}</td><td>${escapeHtml(state.operators.find((op) => op.id === item.operatorId)?.name || "—")}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
 async function submitMeasurement(form) {
@@ -498,7 +624,7 @@ function renderTimeline(items, emptyMessage) {
 function timelineTask(task) {
   const batch = state.batches.find((item) => item.id === task.batchId);
   const beer = batch && state.beerTypes.find((item) => item.id === batch.beerTypeId);
-  return `<button class="timeline-task ${task.tone}" data-open-batch="${task.batchId}"><span class="tank-number">${batch?.fermenterNumber || "?"}</span><span><strong>${task.label}</strong><small>${beer?.name || "Nezināms alus"} · #${batch?.batchNumber || "—"}${task.source === "history" ? ` · prognoze no ${task.sampleCount} ${task.sampleCount === 1 ? "partijas" : "partijām"}` : ""}</small></span>${icon("ChevronRight")}</button>`;
+  return `<button class="timeline-task ${task.tone}" data-open-batch="${task.batchId}"><span class="tank-number">${batch?.fermenterNumber || "?"}</span><span><strong>${task.label}</strong><small>${escapeHtml(beer?.name || "Nezināms alus")} · #${batch?.batchNumber || "—"}${task.source === "history" ? ` · prognoze no ${task.sampleCount} ${task.sampleCount === 1 ? "partijas" : "partijām"}` : ""}</small></span>${icon("ChevronRight")}</button>`;
 }
 
 function analyticsPage() {
@@ -512,16 +638,16 @@ function analyticsPage() {
 function analysisBeerCard(beer) {
   const count = beer.batches.length;
   const readiness = count >= 5 ? "Gatavs: jaunākā + 4 iepriekšējās" : count >= 2 ? "Var sākt salīdzināšanu" : "Vajadzīgas vismaz 2 pabeigtas partijas";
-  return `<article class="analysis-beer-card"><div class="analysis-card-head"><div><span>${count} pabeigtas partijas</span><h2>${beer.name}</h2></div><span class="analysis-status ${count >= 2 ? "ready" : ""}">${readiness}</span></div><div class="chart-placeholder" aria-hidden="true"><svg viewBox="0 0 420 110" preserveAspectRatio="none"><path d="M0 18 C65 25 80 52 140 48 S220 73 280 70 S350 91 420 92"/><path d="M0 27 C55 34 95 40 145 57 S230 62 285 78 S360 82 420 98"/><path class="average" d="M0 22 C60 30 90 46 143 52 S225 68 282 74 S355 87 420 95"/></svg></div><div class="analysis-legend"><span><i></i>Jaunākā + 4 iepriekšējās</span><span><i class="average"></i>Visu partiju vidējais</span></div></article>`;
+  return `<article class="analysis-beer-card"><div class="analysis-card-head"><div><span>${count} pabeigtas partijas</span><h2>${escapeHtml(beer.name)}</h2></div><span class="analysis-status ${count >= 2 ? "ready" : ""}">${readiness}</span></div><div class="chart-placeholder" aria-hidden="true"><svg viewBox="0 0 420 110" preserveAspectRatio="none"><path d="M0 18 C65 25 80 52 140 48 S220 73 280 70 S350 91 420 92"/><path d="M0 27 C55 34 95 40 145 57 S230 62 285 78 S360 82 420 98"/><path class="average" d="M0 22 C60 30 90 46 143 52 S225 68 282 74 S355 87 420 95"/></svg></div><div class="analysis-legend"><span><i></i>Jaunākā + 4 iepriekšējās</span><span><i class="average"></i>Visu partiju vidējais</span></div></article>`;
 }
 
 function historyPage() {
   const finished = state.batches.filter((batch) => batch.status === BATCH_STATUS.FINISHED).reverse();
-  shell(`<main><section class="page-heading"><div><p class="eyebrow">Pabeigtās partijas</p><h1>Vēsture</h1></div></section><section class="history-list">${finished.length ? finished.map((batch) => { const beer = state.beerTypes.find((item) => item.id === batch.beerTypeId); return `<button class="history-row" data-open-batch="${batch.id}"><span class="tank-number">${batch.fermenterNumber}</span><span><strong>${beer.name} · ${batch.volumeTons} t</strong><small>#${batch.batchNumber} · ${formatDate(batch.brewDate)} · ${batch.measurements.length} mērījumi</small></span>${icon("ChevronRight")}</button>`; }).join("") : `<div class="empty-state">${icon("History", 38)}<h2>Vēsture vēl ir tukša</h2><p>Pabeigtās partijas būs redzamas šeit.</p></div>`}</section></main>`, "Vēsture");
+  shell(`<main><section class="page-heading"><div><p class="eyebrow">Pabeigtās partijas</p><h1>Vēsture</h1></div></section><section class="history-list">${finished.length ? finished.map((batch) => { const beer = state.beerTypes.find((item) => item.id === batch.beerTypeId); return `<button class="history-row" data-open-batch="${batch.id}"><span class="tank-number">${batch.fermenterNumber}</span><span><strong>${escapeHtml(beer.name)} · ${batch.volumeTons} t</strong><small>#${batch.batchNumber} · ${formatDate(batch.brewDate)} · ${batch.measurements.length} mērījumi</small></span>${icon("ChevronRight")}</button>`; }).join("") : `<div class="empty-state">${icon("History", 38)}<h2>Vēsture vēl ir tukša</h2><p>Pabeigtās partijas būs redzamas šeit.</p></div>`}</section></main>`, "Vēsture");
 }
 
 function settingsPage() {
-  shell(`<main class="narrow"><section class="page-heading"><div><p class="eyebrow">Konfigurācija</p><h1>Iestatījumi</h1></div></section><section class="panel"><div class="panel-title"><h2>Operatori</h2><span>Katram operatoram ir savs PIN</span></div><div class="operator-list">${state.operators.map((operator) => `<div class="operator-row"><span class="avatar">${operator.name.slice(0, 1).toUpperCase()}</span><strong>${operator.name}</strong>${operator.id === state.activeOperatorId ? `<span class="current-label">Aktīvs</span>` : ""}</div>`).join("")}<form id="operator-form" class="inline-form"><input name="name" placeholder="Jauna operatora vārds" required><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" placeholder="PIN (4–8 cipari)" required><button class="secondary">${icon("UserPlus")} Pievienot</button></form></div></section><section class="panel pin-panel"><div class="panel-title"><div><h2>Mainīt savu PIN</h2><p>Aktīvais operators: ${currentOperator()?.name || "—"}</p></div><span>PIN netiek glabāts atklātā tekstā</span></div><form id="change-pin-form" class="pin-form"><div class="field"><label>Pašreizējais PIN</label><input name="currentPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Jaunais PIN</label><input name="newPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Atkārto jauno PIN</label><input name="newPinConfirm" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="auth-message full" id="pin-message"></div><button class="secondary full">${icon("KeyRound")} Nomainīt PIN</button></form></section><section class="panel notification-panel"><div><h2>${icon("BellRing")} Darbu paziņojumi</h2><p>Atverot aplikāciju un ieejot operatora profilā, parādīsies šodienas obligātie mērījumi un procesa darbības.</p></div><button class="secondary" data-enable-notifications>${"Notification" in window && Notification.permission === "granted" ? `${icon("CircleCheck")} Sistēmas paziņojumi ieslēgti` : `${icon("Bell")} Ieslēgt sistēmas paziņojumus`}</button></section><section class="panel notice"><h2>${icon(isSupabaseConfigured ? "CloudCog" : "CloudOff")} ${isSupabaseConfigured ? "Supabase sinhronizācija aktīva" : "Lokālais režīms"}</h2><p>${isSupabaseConfigured ? "Tiešsaistē izmaiņas tiek nosūtītas uz kopīgo datubāzi. Bezsaistē tās paliek šajā ierīcē un tiks nosūtītas pēc interneta atjaunošanās." : "Dati droši glabājas šajā ierīcē ar IndexedDB."}</p><strong>${state.pendingSync.length} ieraksti gaida sinhronizāciju</strong></section><section class="panel reset-panel"><div><p class="eyebrow danger-text">Bīstamā zona</p><h2>Dzēst visus alus datus</h2><p>Neatgriezeniski dzēsīs visas partijas, mērījumus, darbības, filtrēšanas un pildīšanas vēsturi un alus tipus. Operatori, konts un tvertnes paliks.</p></div><button class="danger-button solid" data-reset-brewing-data>${icon("Trash2", 17)} Dzēst visu alus vēsturi</button></section></main>`, "Iestatījumi");
+  shell(`<main class="narrow"><section class="page-heading"><div><p class="eyebrow">Konfigurācija</p><h1>Iestatījumi</h1></div></section><section class="panel"><div class="panel-title"><h2>Operatori</h2><span>Katram operatoram ir savs PIN</span></div><div class="operator-list">${state.operators.map((operator) => `<div class="operator-row"><span class="avatar">${escapeHtml(operator.name.slice(0, 1).toUpperCase())}</span><strong>${escapeHtml(operator.name)}</strong>${operator.id === state.activeOperatorId ? `<span class="current-label">Aktīvs</span>` : ""}</div>`).join("")}<form id="operator-form" class="inline-form"><input name="name" placeholder="Jauna operatora vārds" required><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" placeholder="PIN (4–8 cipari)" required><button class="secondary">${icon("UserPlus")} Pievienot</button></form></div></section><section class="panel pin-panel"><div class="panel-title"><div><h2>Mainīt savu PIN</h2><p>Aktīvais operators: ${escapeHtml(currentOperator()?.name || "—")}</p></div><span>PIN netiek glabāts atklātā tekstā</span></div><form id="change-pin-form" class="pin-form"><div class="field"><label>Pašreizējais PIN</label><input name="currentPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Jaunais PIN</label><input name="newPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Atkārto jauno PIN</label><input name="newPinConfirm" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="auth-message full" id="pin-message"></div><button class="secondary full">${icon("KeyRound")} Nomainīt PIN</button></form></section><section class="panel notification-panel"><div><h2>${icon("BellRing")} Darbu paziņojumi</h2><p>Atverot aplikāciju un ieejot operatora profilā, parādīsies šodienas obligātie mērījumi un procesa darbības.</p></div><button class="secondary" data-enable-notifications>${"Notification" in window && Notification.permission === "granted" ? `${icon("CircleCheck")} Sistēmas paziņojumi ieslēgti` : `${icon("Bell")} Ieslēgt sistēmas paziņojumus`}</button></section><section class="panel notice"><h2>${icon(isSupabaseConfigured ? "CloudCog" : "CloudOff")} ${isSupabaseConfigured ? "Supabase sinhronizācija aktīva" : "Lokālais režīms"}</h2><p>${isSupabaseConfigured ? "Tiešsaistē izmaiņas tiek nosūtītas uz kopīgo datubāzi. Bezsaistē tās paliek šajā ierīcē un tiks nosūtītas pēc interneta atjaunošanās." : "Dati droši glabājas šajā ierīcē ar IndexedDB."}</p><strong>${state.pendingSync.length} ieraksti gaida sinhronizāciju</strong></section><section class="panel reset-panel"><div><p class="eyebrow danger-text">Bīstamā zona</p><h2>Dzēst visus alus datus</h2><p>Neatgriezeniski dzēsīs visas partijas, mērījumus, darbības, filtrēšanas un pildīšanas vēsturi un alus tipus. Operatori, konts un tvertnes paliks.</p></div><button class="danger-button solid" data-reset-brewing-data>${icon("Trash2", 17)} Dzēst visu alus vēsturi</button></section></main>`, "Iestatījumi");
 }
 
 function resetBrewingDataDialog() {
@@ -543,7 +669,9 @@ function resetBrewingDataDialog() {
 }
 
 async function resetAllBrewingData() {
-  const { data: newVersion, error } = await supabase.rpc("reset_brewing_data", { confirmation_text: "DZĒST VISU" });
+  const { data: newVersion, error } = await supabase.rpc("reset_brewing_data_with_session", {
+    session_token: operatorSessionToken(), confirmation_text: "DZĒST VISU",
+  });
   if (error) { alert(`Neizdevās dzēst datus: ${error.message}`); return; }
   state.beerTypes = [];
   state.batches = [];
@@ -565,8 +693,8 @@ async function changeOperatorPin(form) {
   }
   const button = form.querySelector("button");
   button.disabled = true; button.textContent = "Maina PIN…";
-  const { data: changed, error } = await supabase.rpc("change_operator_pin", {
-    operator_id: state.activeOperatorId,
+  const { data: changed, error } = await supabase.rpc("change_operator_pin_with_session", {
+    session_token: operatorSessionToken(),
     current_pin: data.currentPin,
     new_pin: data.newPin,
   });
@@ -577,11 +705,18 @@ async function changeOperatorPin(form) {
     return;
   }
   form.reset();
-  message.className = "auth-message full";
-  message.textContent = "PIN veiksmīgi nomainīts.";
+  await revokeCurrentOperatorSession();
+  operatorUnlockPage("PIN veiksmīgi nomainīts. Drošības dēļ ienāc vēlreiz ar jauno PIN.");
 }
 
-function operatorDialog() { operatorUnlocked = false; operatorUnlockPage(); }
+async function operatorDialog() {
+  try {
+    await revokeCurrentOperatorSession();
+    operatorUnlockPage();
+  } catch (error) {
+    alert(`Operatora sesiju neizdevās droši beigt: ${error.message}`);
+  }
+}
 
 function render() {
   if (route === "dashboard") dashboard();
@@ -593,8 +728,16 @@ function render() {
   else settingsPage();
 }
 
-document.addEventListener("click", (event) => {
-  if (event.target.closest("[data-auth-logout]")) { sessionStorage.removeItem("brewtracker-operator-id"); supabase.auth.signOut(); return; }
+document.addEventListener("click", async (event) => {
+  if (event.target.closest("[data-auth-logout]")) {
+    try {
+      await revokeCurrentOperatorSession();
+      await supabase.auth.signOut();
+    } catch (error) {
+      alert(`Sesiju neizdevās droši beigt: ${error.message}`);
+    }
+    return;
+  }
   const authModeButton = event.target.closest("[data-auth-mode]");
   if (authModeButton) { authMode = authModeButton.dataset.authMode; authPage(); return; }
   const routeButton = event.target.closest("[data-route]");
@@ -613,7 +756,7 @@ document.addEventListener("click", (event) => {
   if (event.target.closest("[data-reset-brewing-data]")) { resetBrewingDataDialog(); return; }
   if (event.target.closest("[data-show-daily-tasks]")) { showDailyTasks(); return; }
   if (event.target.closest("[data-enable-notifications]")) { enableNotifications(); return; }
-  if (event.target.closest('[data-action="operators"]')) operatorDialog();
+  if (event.target.closest('[data-action="operators"]')) await operatorDialog();
 });
 
 document.addEventListener("submit", async (event) => {
@@ -626,7 +769,9 @@ document.addEventListener("submit", async (event) => {
   if (event.target.id === "measurement-form") await submitMeasurement(event.target);
   if (event.target.id === "operator-form") {
     const data = Object.fromEntries(new FormData(event.target));
-    const { data: operator, error } = await supabase.rpc("create_operator", { operator_name: data.name.trim(), operator_pin: data.pin });
+    const { data: operator, error } = await supabase.rpc("create_operator_with_session", {
+      session_token: operatorSessionToken(), operator_name: data.name.trim(), operator_pin: data.pin,
+    });
     if (error) { alert(error.message); return; }
     state.operators.push(operator); state = await saveState(state); render();
   }
@@ -635,6 +780,8 @@ document.addEventListener("submit", async (event) => {
 
 window.addEventListener("online", async () => { await refreshRemoteState(); render(); });
 window.addEventListener("offline", render);
+window.addEventListener("focus", revalidateOpenOperatorSession);
+setInterval(revalidateOpenOperatorSession, 60_000);
 
 async function initializeApp() {
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch((error) => console.error("Service worker registration failed", error));
@@ -645,7 +792,7 @@ async function initializeApp() {
   if (authSession) await loadWorkspace(); else authPage();
   supabase.auth.onAuthStateChange((_event, session) => {
     authSession = session;
-    if (!session) authPage();
+    if (!session) { clearOperatorSession(); authPage(); }
   });
 }
 
