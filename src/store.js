@@ -19,6 +19,9 @@ const defaultState = {
   cleaningEvents: [],
   volumeEvents: [],
   carbonationAdvisories: {},
+  backupExports: [],
+  backupRestoreDrills: [],
+  backupMetadata: null,
   pendingSync: [],
   breweryDataVersion: null,
 };

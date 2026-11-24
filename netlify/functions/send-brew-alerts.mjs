@@ -48,6 +48,10 @@ export default async () => {
         return {brewery_id:subscription.brewery_id,batch_id:batch.id,occurrence_key:occurrence,work_type:type,label:label.replace("Pārbaudi — prognozēts: ",""),source:label.startsWith("Pārbaudi")?"history":"process",due_at:rigaLocalDateTimeIso(dateKey,7)};
       });
     });
+    // A persistent weekly reminder.  It has no batch because it protects the
+    // whole brewery; opening the notification never marks it accepted/completed.
+    const mondayDate=weekMondayKey(dateKey);
+    generated.push({brewery_id:subscription.brewery_id,batch_id:null,occurrence_key:`backup:${mondayDate}`,work_type:"backup",label:"Lejupielādē nedēļas rezerves kopiju",source:"backup",due_at:rigaLocalDateTimeIso(mondayDate,7)});
     if(generated.length){
       const keys=generated.map((item)=>item.occurrence_key);
       const {data:existing,error:existingError}=await supabase.from("work_items").select("id,occurrence_key,status").eq("brewery_id",subscription.brewery_id).in("occurrence_key",keys);
@@ -90,7 +94,7 @@ export default async () => {
 
     const payload = JSON.stringify({
       title: `BrewTracker Pro — ${pending.length} ${pending.length === 1 ? "darbs" : "darbi"}`,
-      body: pending.slice(0, 4).map((task) => `${task.urgency === "overdue" ? "KAVĒTS · " : ""}T${task.fermenterNumber} ${task.beerName}: ${task.label}`).join("\n"),
+      body: pending.slice(0, 4).map((task) => `${task.urgency === "overdue" ? "KAVĒTS · " : ""}${task.batch_id ? `T${task.fermenterNumber} ${task.beerName}: ` : ""}${task.label}`).join("\n"),
       url: pending.length === 1 ? `/?work=${pending[0].id}` : "/?route=tasks",
       tag: `brewtracker-${dateKey}`,
     });
@@ -112,6 +116,13 @@ export default async () => {
     }
   }
 };
+
+function weekMondayKey(dateKey) {
+  const date=new Date(`${dateKey}T12:00:00Z`);
+  const weekday=date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate()-weekday+1);
+  return date.toISOString().slice(0,10);
+}
 
 export const config = { schedule: "0 * * * *" };
 

@@ -6,7 +6,7 @@ function throwOnError(result) {
 }
 
 export async function fetchRemoteState(localState, breweryId, sessionToken = null) {
-  const [fermenters, beerTypes, batches, measurements, actions, packagingRuns, workItems, workItemEvents, cleaningCycles, cleaningEvents, volumeEvents, carbonationAdvisories] = await Promise.all([
+  const [fermenters, beerTypes, batches, measurements, actions, packagingRuns, workItems, workItemEvents, cleaningCycles, cleaningEvents, volumeEvents, carbonationAdvisories, backupExports, backupRestoreDrills] = await Promise.all([
     supabase.from("fermenters").select("*").order("number"),
     supabase.from("beer_types").select("*").order("name"),
     supabase.from("batches").select("*").order("brew_date"),
@@ -19,8 +19,10 @@ export async function fetchRemoteState(localState, breweryId, sessionToken = nul
     supabase.from("vessel_cleaning_events").select("*").order("created_at", { ascending: false }),
     supabase.from("volume_events").select("*").order("recorded_at", { ascending: false }),
     supabase.from("batch_carbonation_advisories").select("*"),
+    supabase.from("backup_exports").select("*").order("exported_at", { ascending: false }).limit(12),
+    supabase.from("backup_restore_drills").select("*").order("created_at", { ascending: false }).limit(12),
   ]);
-  [fermenters, beerTypes, batches, measurements, actions, packagingRuns, workItems, workItemEvents, cleaningCycles, cleaningEvents, volumeEvents, carbonationAdvisories].forEach(throwOnError);
+  [fermenters, beerTypes, batches, measurements, actions, packagingRuns, workItems, workItemEvents, cleaningCycles, cleaningEvents, volumeEvents, carbonationAdvisories, backupExports, backupRestoreDrills].forEach(throwOnError);
   let deletedBatches = localState.deletedBatches || [];
   if (sessionToken) {
     const deleted = await supabase.rpc("list_deleted_batches", { session_token: sessionToken });
@@ -87,6 +89,8 @@ export async function fetchRemoteState(localState, breweryId, sessionToken = nul
       altitudeMeters: item.altitude_meters == null ? null : Number(item.altitude_meters),
       hopCreepAcknowledged: item.hop_creep_acknowledged,
     }])),
+    backupExports: (backupExports.data || []).map((item) => ({ id:item.id, operatorId:item.operator_id, checksum:item.payload_checksum, schemaVersion:item.schema_version, rowCounts:item.row_counts, exportedAt:item.exported_at })),
+    backupRestoreDrills: (backupRestoreDrills.data || []).map((item) => ({ id:item.id, operatorId:item.operator_id, checksum:item.payload_checksum, sourceBreweryId:item.source_brewery_id, schemaVersion:item.schema_version, rowCounts:item.row_counts, status:item.status, details:item.details, createdAt:item.created_at })),
     pendingSync: [],
     breweryId,
   };

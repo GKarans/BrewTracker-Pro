@@ -5,6 +5,7 @@ import { loadState, saveState } from "./store.js";
 import { isSupabaseConfigured, supabase } from "./supabase.js";
 import { fetchRemoteState, syncEvent } from "./sync.js";
 import { ANALYSIS_METRICS, averageCurve, carbonationReadiness, comparableBatches, fermentationMetrics, sameProfileBatches, seriesForBatch } from "./analytics.js";
+import { BACKUP_SCHEMA_VERSION, EXPORT_TABLES, canonicalJson, archivePayload, createBackupArchive, downloadText, toCsv, validateBackupArchive } from "./backup.js";
 
 const app = document.querySelector("#app");
 let state = await loadState();
@@ -270,12 +271,23 @@ async function refreshRemoteState() {
 }
 
 function generatedWorkPayload() {
-  return buildWorkTimeline(state.batches).map((task) => {
+  const generated = buildWorkTimeline(state.batches).map((task) => {
     const type=task.type.replace(/^prediction_/, "");
     const batch=state.batches.find((item)=>item.id===task.batchId);
     const occurrenceKey = workOccurrenceKey(batch, type, task.date);
     return { batch_id: task.batchId, occurrence_key: occurrenceKey, work_type:type, label:task.label.replace(/^Prognozēts: /,""), source:task.source, due_at:rigaLocalDateTimeToIso(task.date, 7) };
   });
+  const currentDate=today();
+  const monday=weekMondayKey(currentDate);
+  generated.push({ batch_id:null, occurrence_key:`backup:${monday}`, work_type:"backup", label:"Lejupielādē nedēļas rezerves kopiju", source:"backup", due_at:rigaLocalDateTimeToIso(monday, 7) });
+  return generated;
+}
+
+function weekMondayKey(dateKey) {
+  const date=new Date(`${dateKey}T12:00:00Z`);
+  const weekday=date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate()-weekday+1);
+  return date.toISOString().slice(0,10);
 }
 
 function workOccurrenceKey(batch, type, dateKey) {
@@ -477,8 +489,8 @@ function dailyTaskItems() {
     return state.workItems.filter((item) => !["completed", "skipped"].includes(item.status) && rigaDateKey(item.dueAt) <= today()).map((item) => {
       const batch = state.batches.find((candidate) => candidate.id === item.batchId);
       const beer = state.beerTypes.find((candidate) => candidate.id === batch?.beerTypeId);
-      return { ...item, batch, beerName: beer?.name || "Nezināms alus", tone: rigaDateKey(item.dueAt) < today() ? "overdue" : "urgent" };
-    }).filter((item) => item.batch);
+      return { ...item, batch, beerName: beer?.name || (item.type === "backup" ? "BrewTracker Pro" : "Nezināms alus"), tone: rigaDateKey(item.dueAt) < today() ? "overdue" : "urgent" };
+    }).filter((item) => item.batch || item.type === "backup");
   }
   return activeBatches().flatMap((batch) => {
     const beer = state.beerTypes.find((item) => item.id === batch.beerTypeId);
@@ -502,7 +514,7 @@ function showDailyTasks(sendSystemNotification = false) {
   const tasks = dailyTaskItems();
   if (!tasks.length) return;
   const dialog = document.createElement("dialog");
-  dialog.innerHTML = `<div class="dialog-card daily-dialog"><button class="dialog-close" data-close-daily>${icon("X")}</button><p class="eyebrow">Šodienas darbi</p><h2>${tasks.length} ${tasks.length === 1 ? "uzdevums" : "uzdevumi"}</h2><p>Atvēršana darbu nepieņem. Izvēlies darbu un nospied “Pieņemt”.</p><div class="daily-task-list">${tasks.map((task) => `<button ${task.id ? `data-open-work-item="${escapeHtml(task.id)}"` : `data-daily-batch="${escapeHtml(task.batch.id)}"`} class="daily-task ${escapeHtml(task.tone)}"><span class="tank-number">${escapeHtml(task.batch.fermenterNumber)}</span><span><strong>${escapeHtml(task.beerName)}</strong><small>#${escapeHtml(task.batch.batchNumber)} · ${escapeHtml(task.label)}</small></span>${icon("ChevronRight")}</button>`).join("")}</div><button class="secondary full" data-close-daily>Aizvērt</button></div>`;
+  dialog.innerHTML = `<div class="dialog-card daily-dialog"><button class="dialog-close" data-close-daily>${icon("X")}</button><p class="eyebrow">Šodienas darbi</p><h2>${tasks.length} ${tasks.length === 1 ? "uzdevums" : "uzdevumi"}</h2><p>Atvēršana darbu nepieņem. Izvēlies darbu un nospied “Pieņemt”.</p><div class="daily-task-list">${tasks.map((task) => `<button ${task.id ? `data-open-work-item="${escapeHtml(task.id)}"` : `data-daily-batch="${escapeHtml(task.batch?.id || "")}"`} class="daily-task ${escapeHtml(task.tone)}"><span class="tank-number">${task.type === "backup" ? icon("Download",18) : escapeHtml(task.batch?.fermenterNumber || "?")}</span><span><strong>${escapeHtml(task.beerName)}</strong><small>${task.batch ? `#${escapeHtml(task.batch.batchNumber)} · ` : ""}${escapeHtml(task.label)}</small></span>${icon("ChevronRight")}</button>`).join("")}</div><button class="secondary full" data-close-daily>Aizvērt</button></div>`;
   document.body.append(dialog);
   dialog.addEventListener("close", () => dialog.remove());
   dialog.addEventListener("click", (event) => {
@@ -521,7 +533,7 @@ function showDailyTasks(sendSystemNotification = false) {
 
   if (sendSystemNotification && "Notification" in window && Notification.permission === "granted") {
     navigator.serviceWorker?.ready.then((registration) => registration.showNotification("BrewTracker Pro — šodienas darbi", {
-      body: tasks.slice(0, 3).map((task) => `Tvertne ${task.batch.fermenterNumber}: ${task.label}`).join("\n"),
+      body: tasks.slice(0, 3).map((task) => task.batch ? `Tvertne ${task.batch.fermenterNumber}: ${task.label}` : task.label).join("\n"),
       icon: "/icons/brewtracker.svg",
       badge: "/icons/brewtracker.svg",
       tag: `brewtracker-${today()}`,
@@ -1006,7 +1018,8 @@ function timelineTask(task) {
   const batch = state.batches.find((item) => item.id === task.batchId);
   const beer = batch && state.beerTypes.find((item) => item.id === batch.beerTypeId);
   const status = task.status === "accepted" ? `Pieņēma: ${state.operators.find((operator) => operator.id === task.acceptedBy)?.name || "operators"}` : task.status === "postponed" ? "Atlikts" : "Jāizdara";
-  return `<button class="timeline-task ${task.tone}" data-open-work-item="${task.id}"><span class="tank-number">${batch?.fermenterNumber || "?"}</span><span><strong>${escapeHtml(task.label)}</strong><small>${escapeHtml(beer?.name || "Nezināms alus")} · #${escapeHtml(batch?.batchNumber || "—")} · ${escapeHtml(status)}</small></span><span class="urgency-badge ${task.tone}">${task.tone === "overdue" ? "Kavēts" : task.tone === "today" ? "Šodien" : task.tone === "info" ? "Drīzumā" : "Plānots"}</span>${icon("ChevronRight")}</button>`;
+  const backup=task.type === "backup";
+  return `<button class="timeline-task ${task.tone}" data-open-work-item="${task.id}"><span class="tank-number">${backup ? icon("Download",18) : batch?.fermenterNumber || "?"}</span><span><strong>${escapeHtml(task.label)}</strong><small>${backup ? `Datu drošība · ${escapeHtml(status)}` : `${escapeHtml(beer?.name || "Nezināms alus")} · #${escapeHtml(batch?.batchNumber || "—")} · ${escapeHtml(status)}`}</small></span><span class="urgency-badge ${task.tone}">${task.tone === "overdue" ? "Kavēts" : task.tone === "today" ? "Šodien" : task.tone === "info" ? "Drīzumā" : "Plānots"}</span>${icon("ChevronRight")}</button>`;
 }
 
 function workItemDialog(workItemId) {
@@ -1017,11 +1030,13 @@ function workItemDialog(workItemId) {
   const acceptedName = state.operators.find((operator) => operator.id === item.acceptedBy)?.name;
   const events = (state.workItemEvents || []).filter((entry) => entry.workItemId === item.id).slice(-6).reverse();
   const dialog = document.createElement("dialog");
-  dialog.innerHTML = `<div class="dialog-card work-dialog"><button class="dialog-close" data-close-work>${icon("X")}</button><p class="eyebrow">${workUrgency(item) === "overdue" ? "Kavēts darbs" : "Procesa darbs"}</p><h2>${escapeHtml(item.label)}</h2><p>${escapeHtml(beer?.name || "Alus")} · ${batch ? `Tvertne ${batch.fermenterNumber} · #${escapeHtml(batch.batchNumber)}` : ""}</p><div class="work-meta"><span>Termiņš <strong>${formatDate(item.dueAt)}</strong></span><span>Statuss <strong>${item.status === "accepted" ? `Pieņēma ${escapeHtml(acceptedName || "operators")}` : item.status === "postponed" ? "Atlikts" : "Jāizdara"}</strong></span></div><div class="dialog-actions work-actions">${item.status !== "accepted" ? `<button class="primary" data-work-transition="accept">${icon("CheckCheck",17)} Pieņemt</button>` : `<button class="primary" data-work-open-batch>${icon("CircleCheck",17)} Izpildīt un apstiprināt</button>`}<button class="secondary" data-work-transition="postpone">Atlikt</button><button class="text-button" data-work-transition="skip">Izlaist</button></div>${events.length ? `<div class="work-event-list"><h3>Vēsture</h3>${events.map((entry) => `<small>${formatDate(entry.createdAt)} · ${escapeHtml(workEventLabel(entry.type))}${entry.reason ? ` · ${escapeHtml(entry.reason)}` : ""}</small>`).join("")}</div>` : ""}</div>`;
+  const isBackup=item.type === "backup";
+  dialog.innerHTML = `<div class="dialog-card work-dialog"><button class="dialog-close" data-close-work>${icon("X")}</button><p class="eyebrow">${workUrgency(item) === "overdue" ? "Kavēts darbs" : isBackup ? "Datu drošība" : "Procesa darbs"}</p><h2>${escapeHtml(item.label)}</h2><p>${isBackup ? "Lejupielādē pilno JSON kopiju un glabā to drošā vietā." : `${escapeHtml(beer?.name || "Alus")} · ${batch ? `Tvertne ${batch.fermenterNumber} · #${escapeHtml(batch.batchNumber)}` : ""}`}</p><div class="work-meta"><span>Termiņš <strong>${formatDate(item.dueAt)}</strong></span><span>Statuss <strong>${item.status === "accepted" ? `Pieņēma ${escapeHtml(acceptedName || "operators")}` : item.status === "postponed" ? "Atlikts" : "Jāizdara"}</strong></span></div><div class="dialog-actions work-actions">${item.status !== "accepted" ? `<button class="primary" data-work-transition="accept">${icon("CheckCheck",17)} Pieņemt</button>` : isBackup ? `<button class="primary" data-work-export-backup="${escapeHtml(item.id)}">${icon("Download",17)} Lejupielādēt un pabeigt</button>` : `<button class="primary" data-work-open-batch>${icon("CircleCheck",17)} Izpildīt un apstiprināt</button>`}<button class="secondary" data-work-transition="postpone">Atlikt</button><button class="text-button" data-work-transition="skip">Izlaist</button></div>${events.length ? `<div class="work-event-list"><h3>Vēsture</h3>${events.map((entry) => `<small>${formatDate(entry.createdAt)} · ${escapeHtml(workEventLabel(entry.type))}${entry.reason ? ` · ${escapeHtml(entry.reason)}` : ""}</small>`).join("")}</div>` : ""}</div>`;
   document.body.append(dialog); dialog.showModal();
   dialog.addEventListener("close",()=>dialog.remove());
   dialog.addEventListener("click",async(event)=>{
     if(event.target===dialog || event.target.closest("[data-close-work]")){dialog.close();return;}
+    if(event.target.closest("[data-work-export-backup]")){ await createAndDownloadBackup("json",item); dialog.close(); return; }
     if(event.target.closest("[data-work-open-batch]")){selectedBatchId=item.batchId;route="batch";dialog.close();render();return;}
     const button=event.target.closest("[data-work-transition]");
     if(!button)return;
@@ -1167,8 +1182,102 @@ async function restoreBatch(batchId) {
   }
 }
 
+function backupFileStamp() {
+  return new Intl.DateTimeFormat("sv-SE", { timeZone:"Europe/Riga", year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" }).format(new Date()).replace(/[ :]/g,"-");
+}
+
+async function readBackupEntities() {
+  if (!isSupabaseConfigured || !navigator.onLine || !brewery) throw new Error("Pilnai rezerves kopijai nepieciešams internets un Supabase savienojums.");
+  const selects = {
+    beer_types:"*", fermenters:"*", operators:"id,brewery_id,name,is_active,created_at",
+    batches:"*", measurements:"*", process_actions:"*", packaging_runs:"*", work_items:"*", work_item_events:"*",
+    vessel_cleaning_cycles:"*", vessel_cleaning_events:"*", volume_events:"*", batch_carbonation_advisories:"*", audit_log:"*",
+  };
+  const entries=await Promise.all(Object.entries(selects).map(async([table, columns]) => {
+    const {data,error}=await supabase.from(table).select(columns);
+    if(error) throw error;
+    return [table,data || []];
+  }));
+  return Object.fromEntries(entries);
+}
+
+async function createAndDownloadBackup(format="json", workItem=null) {
+  try {
+    const entities=await readBackupEntities();
+    const archive=await createBackupArchive({ brewery, entities });
+    const stamp=backupFileStamp();
+    if(format === "csv") {
+      for(const table of EXPORT_TABLES) downloadText(`brewtracker-${stamp}-${table}.csv`,toCsv(archive.entities[table]),"text/csv");
+    } else {
+      downloadText(`brewtracker-${stamp}-pilna-rezerves-kopija.json`,JSON.stringify(archive,null,2));
+    }
+    const {data:record,error}=await supabase.rpc("record_backup_export",{session_token:operatorSessionToken(),archive_schema_version:BACKUP_SCHEMA_VERSION,checksum:archive.manifest.payloadChecksum,counts:archive.manifest.rowCounts});
+    if(error) throw error;
+    state.backupMetadata={ exportedAt:record.exported_at, checksum:record.payload_checksum };
+    state.backupExports=[{id:record.id,operatorId:record.operator_id,checksum:record.payload_checksum,schemaVersion:record.schema_version,rowCounts:record.row_counts,exportedAt:record.exported_at},...(state.backupExports||[])];
+    state=await saveState(state);
+    if(workItem) await transitionWorkItem(workItem,"complete");
+    alert(format === "csv" ? "CSV faili ir sagatavoti lejupielādei. Pārlūkā atļauj vairākas lejupielādes." : "Pilnā JSON rezerves kopija ir lejupielādēta un tās SHA-256 pārbaudes summa ir saglabāta.");
+    render();
+  } catch(error) { alert(`Rezerves kopiju neizdevās sagatavot: ${friendlySyncError(error)}`); }
+}
+
+function restoreBackupDialog() {
+  const input=document.createElement("input");
+  input.type="file"; input.accept="application/json,.json";
+  input.addEventListener("change",async()=>{
+    const file=input.files?.[0]; if(!file)return;
+    try {
+      const archive=JSON.parse(await file.text());
+      const validation=await validateBackupArchive(archive,brewery?.id);
+      backupPreviewDialog(archive,validation);
+    } catch(error) { alert(`Rezerves kopijas failu nevar nolasīt: ${error.message}`); }
+  });
+  input.click();
+}
+
+function backupPreviewDialog(archive, validation) {
+  const counts=Object.entries(validation.rowCounts).filter(([,count])=>count).map(([table,count])=>`<li>${escapeHtml(table)}: <strong>${count}</strong></li>`).join("") || "<li>Nav datu rindu.</li>";
+  const dialog=document.createElement("dialog");
+  const warnings=[...validation.problems];
+  const canRestoreToTest=validation.valid && validation.foreignBrewery;
+  if(validation.foreignBrewery) warnings.push("Fails ir no citas darītavas. Importēšana ir atļauta tikai tukšā testa darītavā — nekad šajā ražošanas darītavā.");
+  const validationMessage=warnings.length
+    ? `<div class="backup-warning"><strong>Pārbaudes rezultāts</strong><ul>${warnings.map((item)=>`<li>${escapeHtml(item)}</li>`).join("")}</ul></div>`
+    : '<div class="backup-ok">SHA-256 pārbaude ir izdevusies. Dati ir gatavi testa projekta atjaunošanas procedūrai.</div>';
+  dialog.innerHTML=`<form method="dialog" class="dialog-card backup-dialog"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow">Atjaunošanas pārbaude</p><h2>${validation.valid ? "Fails ir pārbaudīts" : "Fails nav derīgs"}</h2><p>Pārbaude neko nepārraksta. Faktisku importu drīkst veikt <strong>tikai tukšā, serverī īpaši atzīmētā testa Supabase projektā</strong>; ja tajā jau ir alus dati vai tā nav testa vide, serveris importu noraidīs.</p>${validationMessage}<h3>Priekšskatījums</h3><ul class="backup-counts">${counts}</ul><div class="field"><label>Lai reģistrētu pārbaudi, ieraksti <strong>PĀRBAUDĪT</strong></label><input name="confirmation" autocomplete="off" ${validation.valid?"required":"disabled"}></div>${canRestoreToTest?`<div class="backup-warning"><strong>Testa projekta imports</strong><p>Atver šo pašu aplikāciju, kas pieslēgta tukšam, serverī atzīmētam testa Supabase projektam, augšupielādē failu vēlreiz un ieraksti <strong>ATJAUNOT TESTĀ</strong>. Esoši dati netiks apvienoti vai pārrakstīti.</p><div class="field"><label>Apstiprinājumam ieraksti <strong>ATJAUNOT TESTĀ</strong></label><input name="restoreConfirmation" autocomplete="off"></div></div>`:""}<div class="dialog-actions"><button class="secondary" value="cancel">Aizvērt</button><button class="primary" value="dry-run" ${validation.valid?"":"disabled"}>Reģistrēt pārbaudi</button>${canRestoreToTest?`<button class="danger-button" value="restore-test">Atjaunot tukšā testā</button>`:""}</div></form>`;
+  document.body.append(dialog); dialog.showModal();
+  dialog.addEventListener("close",async()=>{
+    if(dialog.returnValue==="restore-test") {
+      const confirmation=new FormData(dialog.querySelector("form")).get("restoreConfirmation");
+      if(confirmation!=="ATJAUNOT TESTĀ"){ dialog.remove(); alert("Imports netika sākts: apstiprinājuma teksts nebija pareizs."); return; }
+      try {
+        const {data,error}=await supabase.rpc("restore_backup_to_empty_test_brewery",{
+          session_token:operatorSessionToken(),confirmation,canonical_payload:canonicalJson(archivePayload(archive)),expected_checksum:validation.checksum,
+        });
+        if(error) throw error;
+        dialog.remove();
+        alert(`Testa darītavas atjaunošana pabeigta. Atjaunotas ${data?.row_counts?.batches || 0} partijas. Pārlādē aplikāciju, lai redzētu importētos datus.`);
+        await reloadRemotePreservingQueue(operatorSessionToken()); render();
+      } catch(error) { dialog.remove(); alert(`Testa atjaunošana neizdevās: ${friendlySyncError(error)}`); }
+      return;
+    }
+    if(dialog.returnValue!=="dry-run"){dialog.remove();return;}
+    const confirmation=new FormData(dialog.querySelector("form")).get("confirmation");
+    if(confirmation!=="PĀRBAUDĪT"){dialog.remove();alert("Pārbaude netika reģistrēta: apstiprinājuma teksts nebija pareizs.");return;}
+    const {data,error}=await supabase.rpc("record_backup_restore_dry_run",{session_token:operatorSessionToken(),archive_schema_version:archive.schemaVersion,checksum:validation.checksum,source_brewery:archive.brewery?.id || null,counts:validation.rowCounts,is_valid:validation.valid,drill_details:{foreign_brewery:validation.foreignBrewery,mode:"validation_only_no_write"}});
+    dialog.remove();
+    if(error){alert(`Pārbaudi neizdevās reģistrēt: ${friendlySyncError(error)}`);return;}
+    state.backupRestoreDrills=[{id:data.id,operatorId:data.operator_id,checksum:data.payload_checksum,sourceBreweryId:data.source_brewery_id,schemaVersion:data.schema_version,rowCounts:data.row_counts,status:data.status,details:data.details,createdAt:data.created_at},...(state.backupRestoreDrills||[])];
+    state=await saveState(state); render(); alert("Atjaunošanas pārbaude ir reģistrēta. Produkcijas dati nav mainīti.");
+  });
+}
+
 function settingsPage() {
-  shell(`<main class="narrow"><section class="page-heading"><div><p class="eyebrow">Konfigurācija</p><h1>Iestatījumi</h1></div></section><section class="panel"><div class="panel-title"><h2>Operatori</h2><span>Katram operatoram ir savs PIN</span></div><div class="operator-list">${state.operators.map((operator) => `<div class="operator-row"><span class="avatar">${escapeHtml(operator.name.slice(0, 1).toUpperCase())}</span><strong>${escapeHtml(operator.name)}</strong>${operator.id === state.activeOperatorId ? `<span class="current-label">Aktīvs</span>` : ""}</div>`).join("")}<form id="operator-form" class="inline-form"><input name="name" placeholder="Jauna operatora vārds" required><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" placeholder="PIN (4–8 cipari)" required><button class="secondary">${icon("UserPlus")} Pievienot</button></form></div></section><section class="panel pin-panel"><div class="panel-title"><div><h2>Mainīt savu PIN</h2><p>Aktīvais operators: ${escapeHtml(currentOperator()?.name || "—")}</p></div><span>PIN netiek glabāts atklātā tekstā</span></div><form id="change-pin-form" class="pin-form"><div class="field"><label>Pašreizējais PIN</label><input name="currentPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Jaunais PIN</label><input name="newPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Atkārto jauno PIN</label><input name="newPinConfirm" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="auth-message full" id="pin-message"></div><button class="secondary full">${icon("KeyRound")} Nomainīt PIN</button></form></section><section class="panel notification-panel"><div><h2>${icon("BellRing")} Darbu paziņojumi</h2><p>Atverot aplikāciju un ieejot operatora profilā, parādīsies šodienas obligātie mērījumi un procesa darbības.</p></div><button class="secondary" data-enable-notifications>${"Notification" in window && Notification.permission === "granted" ? `${icon("CircleCheck")} Sistēmas paziņojumi ieslēgti` : `${icon("Bell")} Ieslēgt sistēmas paziņojumus`}</button></section><section class="panel notice"><h2>${icon(isSupabaseConfigured ? "CloudCog" : "CloudOff")} ${isSupabaseConfigured ? "Supabase sinhronizācija aktīva" : "Lokālais režīms"}</h2><p>${isSupabaseConfigured ? "Tiešsaistē izmaiņas tiek nosūtītas uz kopīgo datubāzi. Bezsaistē tās paliek šajā ierīcē un tiks nosūtītas pēc interneta atjaunošanās." : "Dati droši glabājas šajā ierīcē ar IndexedDB."}</p><strong>${state.pendingSync.length} ieraksti gaida sinhronizāciju</strong></section><section class="panel reset-panel"><div><p class="eyebrow danger-text">Bīstamā zona</p><h2>Dzēst visus alus datus</h2><p>Neatgriezeniski dzēsīs visas partijas, mērījumus, darbības, filtrēšanas un pildīšanas vēsturi un alus tipus. Operatori, konts un tvertnes paliks.</p></div><button class="danger-button solid" data-reset-brewing-data>${icon("Trash2", 17)} Dzēst visu alus vēsturi</button></section></main>`, "Iestatījumi");
+  const latestBackup=(state.backupExports || [])[0];
+  const latestDrill=(state.backupRestoreDrills || [])[0];
+  const backupStatus=latestBackup ? `Pēdējais eksports: ${new Date(latestBackup.exportedAt).toLocaleString("lv-LV")} · SHA-256 ${escapeHtml(latestBackup.checksum.slice(0,12))}…` : "Vēl nav reģistrēta lejupielādēta rezerves kopija.";
+  shell(`<main class="narrow"><section class="page-heading"><div><p class="eyebrow">Konfigurācija</p><h1>Iestatījumi</h1></div></section><section class="panel"><div class="panel-title"><h2>Operatori</h2><span>Katram operatoram ir savs PIN</span></div><div class="operator-list">${state.operators.map((operator) => `<div class="operator-row"><span class="avatar">${escapeHtml(operator.name.slice(0, 1).toUpperCase())}</span><strong>${escapeHtml(operator.name)}</strong>${operator.id === state.activeOperatorId ? `<span class="current-label">Aktīvs</span>` : ""}</div>`).join("")}<form id="operator-form" class="inline-form"><input name="name" placeholder="Jauna operatora vārds" required><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" placeholder="PIN (4–8 cipari)" required><button class="secondary">${icon("UserPlus")} Pievienot</button></form></div></section><section class="panel pin-panel"><div class="panel-title"><div><h2>Mainīt savu PIN</h2><p>Aktīvais operators: ${escapeHtml(currentOperator()?.name || "—")}</p></div><span>PIN netiek glabāts atklātā tekstā</span></div><form id="change-pin-form" class="pin-form"><div class="field"><label>Pašreizējais PIN</label><input name="currentPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Jaunais PIN</label><input name="newPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Atkārto jauno PIN</label><input name="newPinConfirm" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="auth-message full" id="pin-message"></div><button class="secondary full">${icon("KeyRound")} Nomainīt PIN</button></form></section><section class="panel notification-panel"><div><h2>${icon("BellRing")} Darbu paziņojumi</h2><p>Atverot aplikāciju un ieejot operatora profilā, parādīsies šodienas obligātie mērījumi un procesa darbības.</p></div><button class="secondary" data-enable-notifications>${"Notification" in window && Notification.permission === "granted" ? `${icon("CircleCheck")} Sistēmas paziņojumi ieslēgti` : `${icon("Bell")} Ieslēgt sistēmas paziņojumus`}</button></section><section class="panel backup-panel"><div class="panel-title"><div><p class="eyebrow">Pirmdienas drošības kopija</p><h2>Vēstures eksports un pārbaude</h2></div><span>${latestBackup ? "Pārbaudīts" : "Nepieciešams"}</span></div><p>JSON ir pilna atjaunošanai paredzēta kopija. CSV faili ir pārskatīšanai. PIN, operatoru sesijas un Push abonementi netiek eksportēti.</p><p class="backup-status">${backupStatus}</p><div class="backup-actions"><button class="primary" data-export-backup="json">${icon("Download",17)} Lejupielādēt pilnu JSON</button><button class="secondary" data-export-backup="csv">${icon("Files",17)} Lejupielādēt CSV failus</button><button class="secondary" data-restore-backup>${icon("ShieldCheck",17)} Pārbaudīt rezerves kopiju</button></div><small>Atjaunošana šajā produkcijas vidē ir tikai drošības pārbaude. Faktisku atjaunošanu vispirms veic atsevišķā testa Supabase projektā.</small>${latestDrill?`<p class="backup-status">Pēdējā pārbaude: ${new Date(latestDrill.createdAt).toLocaleString("lv-LV")} · ${latestDrill.status === "validated" ? "derīga" : "bloķēta"}</p>`:""}</section><section class="panel notice"><h2>${icon(isSupabaseConfigured ? "CloudCog" : "CloudOff")} ${isSupabaseConfigured ? "Supabase sinhronizācija aktīva" : "Lokālais režīms"}</h2><p>${isSupabaseConfigured ? "Tiešsaistē izmaiņas tiek nosūtītas uz kopīgo datubāzi. Bezsaistē tās paliek šajā ierīcē un tiks nosūtītas pēc interneta atjaunošanās." : "Dati droši glabājas šajā ierīcē ar IndexedDB."}</p><strong>${state.pendingSync.length} ieraksti gaida sinhronizāciju</strong></section><section class="panel reset-panel"><div><p class="eyebrow danger-text">Bīstamā zona</p><h2>Dzēst visus alus datus</h2><p>Neatgriezeniski dzēsīs visas partijas, mērījumus, darbības, filtrēšanas un pildīšanas vēsturi un alus tipus. Operatori, konts un tvertnes paliks.</p></div><button class="danger-button solid" data-reset-brewing-data>${icon("Trash2", 17)} Dzēst visu alus vēsturi</button></section></main>`, "Iestatījumi");
 }
 
 function resetBrewingDataDialog() {
@@ -1280,6 +1389,9 @@ document.addEventListener("click", async (event) => {
   if (deleteBatchButton) { deleteBatchDialog(deleteBatchButton.dataset.deleteBatch); return; }
   const restoreBatchButton = event.target.closest("[data-restore-batch]");
   if (restoreBatchButton) { await restoreBatch(restoreBatchButton.dataset.restoreBatch); return; }
+  const exportBackupButton=event.target.closest("[data-export-backup]");
+  if(exportBackupButton){ await createAndDownloadBackup(exportBackupButton.dataset.exportBackup); return; }
+  if(event.target.closest("[data-restore-backup]")){ restoreBackupDialog(); return; }
   if (event.target.closest("[data-reset-brewing-data]")) { resetBrewingDataDialog(); return; }
   if (event.target.closest("[data-show-daily-tasks]")) { showDailyTasks(); return; }
   if (event.target.closest("[data-enable-notifications]")) { enableNotifications(); return; }

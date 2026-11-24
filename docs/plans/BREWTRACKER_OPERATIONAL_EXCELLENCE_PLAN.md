@@ -379,6 +379,8 @@ The UI labels this state **Brīva · gatava (pārnests statuss)**, never “tīr
 
 ## Phase 7 — Monday export task, restore workflow, and backup proof
 
+Implementation status (2026-11-24): browser-initiated JSON and CSV exports, SHA-256 manifest, export metadata, Monday task/push reminder, and non-destructive restore-file validation are implemented locally in `202611240006_backup_exports.sql`. `202611240007_restore_to_empty_test_brewery.sql` adds a write-capable restore only for an empty, separately marked test brewery; it verifies the canonical payload SHA-256 and refuses same-brewery, non-empty, unmarked, or repeat imports. It never merges into or replaces the production brewery. Historical batches sharing one physical vessel are restored without replaying transient vessel occupancy; the archive's final physical-vessel snapshot is applied afterwards.
+
 **How this serves the primary goal:** Years of brewery history can be recovered after accidental changes or service failure, and operators receive a simple weekly habit instead of assuming backups exist.
 
 ### What to implement
@@ -397,6 +399,23 @@ The UI labels this state **Brīva · gatava (pārnests statuss)**, never “tīr
 5. Before permanent purge, require a recent verified export and typed confirmation.
 6. Document separate admin disaster-recovery dump procedure using Supabase CLI `db dump --data-only`; do not call the browser archive a full Postgres backup.
 7. Run a restore drill against a separate Supabase project before production restore is enabled.
+
+### Empty test-project restore drill
+
+1. Create a separate Supabase project and deploy the same ordered migrations there.
+2. Create the normal initial brewery, operator and vessel setup, but do not create beer types, batches, work items or cleaning records. In that **test project only**, mark the target brewery explicitly:
+
+   ```sql
+   update public.breweries
+   set is_restore_test_target = true
+   where id = '<test-brewery-uuid>';
+   ```
+
+   Never run this command against the production brewery.
+3. Deploy the same application with that test project's URL/key and sign in with its operator.
+4. In **Iestatījumi → Vēstures eksports un pārbaude**, upload the JSON archive, inspect the checksum and row-count preview, then type `ATJAUNOT TESTĀ`.
+5. The RPC rejects any target containing operational brewery records, or any brewery without the server-side test-target flag. It maps physical vessels by number and restores historical operators as inactive profiles without importing PIN hashes, sessions or push subscriptions.
+6. Reload the application and verify the import counts, completed batch history, measurements, actions, packaging and loss records. Record the successful drill outside production before relying on it for disaster recovery.
 
 ### Documentation references
 
