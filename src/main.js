@@ -1097,7 +1097,7 @@ async function ensureAcceptedWork(batchId, type) {
 }
 
 function chartSvg(seriesList, average, metric) {
-  const all = [...seriesList.flat(), ...average].filter((point) => point?.value != null);
+  const all = [...seriesList.flatMap((series) => series.points), ...average].filter((point) => point?.value != null);
   if (all.length < 2) return `<div class="analysis-no-data">Nav pietiekamu ${escapeHtml(ANALYSIS_METRICS[metric].label)} mērījumu līknei.</div>`;
   const min = Math.min(...all.map((point) => point.value));
   const max = Math.max(...all.map((point) => point.value));
@@ -1106,19 +1106,25 @@ function chartSvg(seriesList, average, metric) {
   const line = (points) => points.map((point, index) => `${index ? "L" : "M"}${(point.day / maxDay) * 100} ${y(point.value)}`).join(" ");
   const band = average.filter((point) => point.count >= 5 && point.lower != null);
   const bandPath = band.length > 1 ? `${line(band.map((point) => ({ ...point, value: point.upper })))} ${[...band].reverse().map((point) => `L${(point.day / maxDay) * 100} ${y(point.lower)}`).join(" ")} Z` : "";
-  return `<div class="analysis-chart" role="img" aria-label="${escapeHtml(ANALYSIS_METRICS[metric].label)} pēc fermentācijas dienas"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${bandPath ? `<path class="control-band" d="${bandPath}"/>` : ""}${seriesList.map((points, index) => `<path class="batch-line ${index === seriesList.length - 1 ? "current" : ""}" d="${line(points)}"/>`).join("")}${average.length > 1 ? `<path class="average-line" d="${line(average)}"/>` : ""}</svg><div class="chart-axis"><span>${min.toFixed(metric === "gravity" ? 0 : 1)}</span><span>${max.toFixed(metric === "gravity" ? 0 : 1)}</span><span>Fermentācijas diena 0–${maxDay}</span></div></div>`;
+  const precision = metric === "gravity" ? 0 : 2;
+  const unit = ANALYSIS_METRICS[metric].unit ? ` ${ANALYSIS_METRICS[metric].unit}` : "";
+  const observedPoints = seriesList.map((series, index) => series.points.map((point) => {
+    const label = `${series.batchNumber}: ${point.day}. fermentācijas diena · ${point.value.toFixed(precision)}${unit}`;
+    return `<circle class="measurement-point ${index === seriesList.length - 1 ? "current" : ""}" cx="${(point.day / maxDay) * 100}" cy="${y(point.value)}" r="1.5"><title>${escapeHtml(label)}</title></circle>`;
+  }).join("")).join("");
+  return `<div class="analysis-chart" role="img" aria-label="${escapeHtml(ANALYSIS_METRICS[metric].label)} pēc fermentācijas dienas"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${bandPath ? `<path class="control-band" d="${bandPath}"/>` : ""}${seriesList.map((series, index) => `<path class="batch-line ${index === seriesList.length - 1 ? "current" : ""}" d="${line(series.points)}"/>`).join("")}${average.length > 1 ? `<path class="average-line" d="${line(average)}"/>` : ""}${observedPoints}</svg><div class="chart-axis"><span>${min.toFixed(metric === "gravity" ? 0 : 1)}</span><span>${max.toFixed(metric === "gravity" ? 0 : 1)}</span><span>Fermentācijas diena 0–${maxDay}</span></div></div>`;
 }
 
 function metricCard(metric, visibleBatches, allBatches) {
   const latest = visibleBatches.at(-1);
-  const lines = visibleBatches.map((batch) => seriesForBatch(batch, metric));
+  const lines = visibleBatches.map((batch) => ({ batchNumber: batch.batchNumber, points: seriesForBatch(batch, metric) }));
   const average = averageCurve(allBatches, metric);
   const sampleCount = allBatches.filter((batch) => seriesForBatch(batch, metric).length > 0).length;
   const enoughBand = average.some((point) => point.count >= 5 && point.sd != null);
   const current = seriesForBatch(latest, metric).at(-1);
   const precision = metric === "gravity" ? 0 : 1;
   const summary = current ? `Jaunākā vērtība: ${current.value.toFixed(precision)} ${ANALYSIS_METRICS[metric].unit}, ${current.day}. fermentācijas dienā; ${seriesForBatch(latest, metric).length} datu punkti.` : "Jaunākajā partijā šim rādītājam datu nav.";
-  return `<article class="analysis-metric-card"><div class="panel-title"><h3>${escapeHtml(ANALYSIS_METRICS[metric].label)} ${ANALYSIS_METRICS[metric].unit}</h3><span>${enoughBand ? "Normālais diapazons: ±1 SD" : `Diapazonam vajag vēl ${Math.max(0, 5 - sampleCount)} partijas ar šo mērījumu`}</span></div>${chartSvg(lines, average, metric)}<p class="chart-summary">${summary}</p><p class="chart-note">Plānās līnijas: pēdējās ${visibleBatches.length} partijas. Oranžā: visu pabeigto partiju vidējais. Punkti starp mērījumiem ir lineāri savienoti tikai attēlošanai; tukši vēsturiskie lauki netiek aizvietoti.</p>${latest ? `<small>Jaunākā: #${escapeHtml(latest.batchNumber)}</small>` : ""}</article>`;
+  return `<article class="analysis-metric-card"><div class="panel-title"><h3>${escapeHtml(ANALYSIS_METRICS[metric].label)} ${ANALYSIS_METRICS[metric].unit}</h3><span>${enoughBand ? "Normālais diapazons: ±1 SD" : `Diapazonam vajag vēl ${Math.max(0, 5 - sampleCount)} partijas ar šo mērījumu`}</span></div>${chartSvg(lines, average, metric)}<p class="chart-summary">${summary}</p><p class="chart-note">Mazie punkti ir īsti mērījumi — uzved peli uz punkta, lai redzētu partiju, fermentācijas dienu un vērtību. Līnijas tikai savieno šos punktus; tukši vēsturiskie lauki netiek aizvietoti.</p>${latest ? `<small>Jaunākā: #${escapeHtml(latest.batchNumber)}</small>` : ""}</article>`;
 }
 
 function analysisSummary(batch, baseline) {
