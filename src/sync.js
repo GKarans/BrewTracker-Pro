@@ -6,15 +6,17 @@ function throwOnError(result) {
 }
 
 export async function fetchRemoteState(localState, breweryId, sessionToken = null) {
-  const [fermenters, beerTypes, batches, measurements, actions, packagingRuns] = await Promise.all([
+  const [fermenters, beerTypes, batches, measurements, actions, packagingRuns, workItems, workItemEvents] = await Promise.all([
     supabase.from("fermenters").select("*").order("number"),
     supabase.from("beer_types").select("*").order("name"),
     supabase.from("batches").select("*").order("brew_date"),
     supabase.from("measurements").select("*").order("measured_at"),
     supabase.from("process_actions").select("*").order("performed_at"),
     supabase.from("packaging_runs").select("*").order("filtered_at"),
+    supabase.from("work_items").select("*").order("due_at"),
+    supabase.from("work_item_events").select("*").order("created_at"),
   ]);
-  [fermenters, beerTypes, batches, measurements, actions, packagingRuns].forEach(throwOnError);
+  [fermenters, beerTypes, batches, measurements, actions, packagingRuns, workItems, workItemEvents].forEach(throwOnError);
   let deletedBatches = localState.deletedBatches || [];
   if (sessionToken) {
     const deleted = await supabase.rpc("list_deleted_batches", { session_token: sessionToken });
@@ -55,6 +57,8 @@ export async function fetchRemoteState(localState, breweryId, sessionToken = nul
       packagingRuns: activePackagingRuns.filter((item) => item.batch_id === batch.id).map((item) => ({ id: item.id, version: item.version || 1, clientId: item.client_id, runNumber: item.run_number, volumeTons: Number(item.volume_tons), centrifugeLiters: item.centrifuge_liters == null ? null : Number(item.centrifuge_liters), status: item.status, filteredAt: item.filtered_at, packagedAt: item.packaged_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), co2Vol: item.co2_vol == null ? null : Number(item.co2_vol), operatorId: item.operator_id })),
     })),
     deletedBatches: deletedBatches.map((item) => ({ id: item.id, batchNumber: item.batch_number, brewDate: item.brew_date, beerName: item.beer_name, version: item.version, deletedAt: item.deleted_at, deleteReason: item.delete_reason, deletedByName: item.deleted_by_name })),
+    workItems: workItems.data.map((item) => ({ id:item.id, batchId:item.batch_id, occurrenceKey:item.occurrence_key, type:item.work_type, label:item.label, source:item.source, dueAt:item.due_at, status:item.status, acceptedBy:item.accepted_by, acceptedAt:item.accepted_at, completedBy:item.completed_by, completedAt:item.completed_at, postponedBy:item.postponed_by, postponedAt:item.postponed_at, postponeReason:item.postpone_reason, skippedBy:item.skipped_by, skippedAt:item.skipped_at, skipReason:item.skip_reason, linkedMeasurementId:item.linked_measurement_id, linkedActionId:item.linked_action_id, version:item.version })),
+    workItemEvents: workItemEvents.data.map((item) => ({ id:item.id, workItemId:item.work_item_id, operatorId:item.operator_id, type:item.event_type, previousStatus:item.previous_status, newStatus:item.new_status, reason:item.reason, details:item.details, createdAt:item.created_at })),
     pendingSync: [],
     breweryId,
   };
@@ -120,7 +124,8 @@ export async function syncEvent(state, event, breweryId, sessionToken) {
       throw new Error("Neatbalstīts sinhronizācijas ieraksts.");
     }
   }
-  throwOnError(await supabase.rpc("sync_operator_event_v2", {
+  const rpcName = event.workItemId ? "sync_operator_work_event" : "sync_operator_event_v2";
+  const rpcArgs = {
     session_token: sessionToken,
     expected_operator_id: event.operatorId,
     entity_type: event.entity,
@@ -128,6 +133,11 @@ export async function syncEvent(state, event, breweryId, sessionToken) {
     payload,
     expected_version: event.expectedVersion ?? event.expectedVersions?.batch ?? 0,
     change_reason: event.reason || null,
-  }));
+  };
+  if (event.workItemId) {
+    rpcArgs.target_work_item_id = event.workItemId;
+    rpcArgs.work_item_expected_version = event.workItemVersion;
+  }
+  throwOnError(await supabase.rpc(rpcName, rpcArgs));
   return true;
 }

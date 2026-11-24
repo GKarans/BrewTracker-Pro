@@ -7,12 +7,13 @@ import { fetchRemoteState, syncEvent } from "./sync.js";
 
 const app = document.querySelector("#app");
 let state = await loadState();
-let route = "dashboard";
+let route = new URLSearchParams(location.search).get("route") === "tasks" ? "tasks" : "dashboard";
 let selectedBatchId = null;
 let authSession = null;
 let authMode = "login";
 let brewery = null;
 let operatorUnlocked = false;
+let requestedWorkItemId = new URLSearchParams(location.search).get("work");
 
 const OPERATOR_ID_SESSION_KEY = "brewtracker-operator-id";
 const OPERATOR_TOKEN_SESSION_KEY = "brewtracker-operator-session";
@@ -162,6 +163,7 @@ async function submitOnboarding(form) {
   await refreshRemoteState();
   render();
   showDailyTasks(true);
+  openRequestedWorkItem();
 }
 
 async function submitOperatorUnlock(form) {
@@ -182,6 +184,15 @@ async function submitOperatorUnlock(form) {
   state = await saveState(state);
   await refreshRemoteState();
   render();
+  openRequestedWorkItem();
+}
+
+function openRequestedWorkItem() {
+  if (!requestedWorkItemId) return;
+  const id=requestedWorkItemId;
+  requestedWorkItemId=null;
+  history.replaceState({},"",location.pathname);
+  setTimeout(()=>workItemDialog(id),0);
 }
 
 async function refreshRemoteState() {
@@ -248,11 +259,52 @@ async function refreshRemoteState() {
     state = await fetchRemoteState(state, brewery.id, token);
     state.operators = operators;
     state.activeOperatorId = operatorId;
+    await generatePersistedWorkItems(token);
     state = await saveState(state);
   } catch (error) {
     console.error("Supabase synchronization failed", error);
     if (!isTransientSyncError(error)) alert(`Datu ielāde neizdevās: ${friendlySyncError(error)}`);
   }
+}
+
+function generatedWorkPayload() {
+  return buildWorkTimeline(state.batches).map((task) => {
+    const type=task.type.replace(/^prediction_/, "");
+    const batch=state.batches.find((item)=>item.id===task.batchId);
+    const occurrenceKey = workOccurrenceKey(batch, type, task.date);
+    return { batch_id: task.batchId, occurrence_key: occurrenceKey, work_type:type, label:task.label.replace(/^Prognozēts: /,""), source:task.source, due_at:rigaLocalDateTimeToIso(task.date, 7) };
+  });
+}
+
+function workOccurrenceKey(batch, type, dateKey) {
+  if (type === "measure") return `${batch.id}:measure:${dateKey}`;
+  if (["filter", "package"].includes(type)) {
+    const filtered = (batch.packagingRuns || []).find((run) => run.status === "filtered");
+    const cycle = type === "package" && filtered
+      ? filtered.runNumber
+      : (batch.packagingRuns || []).length + 1;
+    return `${batch.id}:${type}:cycle-${Math.max(1, cycle)}`;
+  }
+  return `${batch.id}:${type}`;
+}
+
+async function generatePersistedWorkItems(token = operatorSessionToken()) {
+  if (!navigator.onLine || !token || !isSupabaseConfigured) return;
+  const payload = generatedWorkPayload();
+  if (payload.length) {
+    const { error } = await supabase.rpc("upsert_work_items", { session_token: token, generated_items: payload });
+    if (error) throw error;
+  }
+  const [items, events] = await Promise.all([
+    supabase.from("work_items").select("*").order("due_at"),
+    supabase.from("work_item_events").select("*").order("created_at"),
+  ]);
+  if (items.error) throw items.error;
+  if (events.error) throw events.error;
+  state.workItems = (items.data || []).map((item) => ({ id:item.id, batchId:item.batch_id, occurrenceKey:item.occurrence_key, type:item.work_type, label:item.label, source:item.source, dueAt:item.due_at, status:item.status, acceptedBy:item.accepted_by, acceptedAt:item.accepted_at, completedBy:item.completed_by, completedAt:item.completed_at, postponedBy:item.postponed_by, postponedAt:item.postponed_at, postponeReason:item.postpone_reason, skippedBy:item.skipped_by, skippedAt:item.skipped_at, skipReason:item.skip_reason, linkedMeasurementId:item.linked_measurement_id, linkedActionId:item.linked_action_id, version:item.version }));
+  state.workItemEvents = (events.data || []).map((item) => ({ id:item.id, workItemId:item.work_item_id, operatorId:item.operator_id, type:item.event_type, previousStatus:item.previous_status, newStatus:item.new_status, reason:item.reason, details:item.details, createdAt:item.created_at }));
+  const badgeCount=state.workItems.filter((item)=>!["completed","skipped"].includes(item.status) && rigaDateKey(item.dueAt)<=today()).length;
+  if("setAppBadge" in navigator) navigator.setAppBadge(badgeCount).catch(()=>{});
 }
 
 async function saveAndSync(event) {
@@ -300,6 +352,7 @@ async function saveAndSync(event) {
     await syncEvent(state, queued, brewery.id, operatorSessionToken());
     state.pendingSync = state.pendingSync.filter((item) => item.id !== queued.id);
     state = await saveState(state);
+    if (queued.workItemId) await refreshRemoteState();
     return true;
   } catch (error) {
     console.error("Change synchronization failed", error);
@@ -386,7 +439,20 @@ async function submitAuth(form) {
 function activeBatches() { return state.batches.filter((batch) => batch.status !== BATCH_STATUS.FINISHED); }
 function activePackagingRun() { return state.batches.flatMap((batch) => (batch.packagingRuns || []).map((run) => ({ ...run, batch }))).find((item) => item.status === "filtered"); }
 function currentOperator() { return state.operators.find((operator) => operator.id === state.activeOperatorId) || state.operators[0]; }
-function today() { return localDateTimeValue().slice(0, 10); }
+function today() { return rigaDateKey(); }
+function rigaDateKey(value = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone:"Europe/Riga", year:"numeric", month:"2-digit", day:"2-digit" }).format(new Date(value));
+}
+function rigaLocalDateTimeToIso(dateKey, hour = 7, minute = 0) {
+  const desired = Date.UTC(Number(dateKey.slice(0,4)), Number(dateKey.slice(5,7))-1, Number(dateKey.slice(8,10)), hour, minute);
+  let instant = desired;
+  for (let attempt=0; attempt<2; attempt+=1) {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone:"Europe/Riga", hour12:false, year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" }).formatToParts(new Date(instant)).filter((part)=>part.type!=="literal").map((part)=>[part.type,part.value]));
+    const represented = Date.UTC(Number(parts.year),Number(parts.month)-1,Number(parts.day),Number(parts.hour)%24,Number(parts.minute));
+    instant += desired-represented;
+  }
+  return new Date(instant).toISOString();
+}
 function localDateTimeValue(value = new Date()) {
   const date = new Date(value);
   date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
@@ -395,6 +461,13 @@ function localDateTimeValue(value = new Date()) {
 function formatDate(value) { return new Intl.DateTimeFormat("lv-LV", { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(`${value.slice(0, 10)}T00:00:00`)); }
 
 function dailyTaskItems() {
+  if (isSupabaseConfigured && state.workItems?.length) {
+    return state.workItems.filter((item) => !["completed", "skipped"].includes(item.status) && rigaDateKey(item.dueAt) <= today()).map((item) => {
+      const batch = state.batches.find((candidate) => candidate.id === item.batchId);
+      const beer = state.beerTypes.find((candidate) => candidate.id === batch?.beerTypeId);
+      return { ...item, batch, beerName: beer?.name || "Nezināms alus", tone: rigaDateKey(item.dueAt) < today() ? "overdue" : "urgent" };
+    }).filter((item) => item.batch);
+  }
   return activeBatches().flatMap((batch) => {
     const beer = state.beerTypes.find((item) => item.id === batch.beerTypeId);
     const tasks = getDailyTasks(batch);
@@ -417,7 +490,7 @@ function showDailyTasks(sendSystemNotification = false) {
   const tasks = dailyTaskItems();
   if (!tasks.length) return;
   const dialog = document.createElement("dialog");
-  dialog.innerHTML = `<div class="dialog-card daily-dialog"><button class="dialog-close" data-close-daily>${icon("X")}</button><p class="eyebrow">Šodienas darbi</p><h2>${tasks.length} ${tasks.length === 1 ? "uzdevums" : "uzdevumi"}</h2><p>Pārbaudi un izpildi darbus, kas šodien gaida fermentorveikalā.</p><div class="daily-task-list">${tasks.map((task) => `<button data-daily-batch="${escapeHtml(task.batch.id)}" class="daily-task ${escapeHtml(task.tone)}"><span class="tank-number">${escapeHtml(task.batch.fermenterNumber)}</span><span><strong>${escapeHtml(task.beerName)}</strong><small>#${escapeHtml(task.batch.batchNumber)} · ${escapeHtml(task.label)}</small></span>${icon("ChevronRight")}</button>`).join("")}</div><button class="secondary full" data-close-daily>Aizvērt</button></div>`;
+  dialog.innerHTML = `<div class="dialog-card daily-dialog"><button class="dialog-close" data-close-daily>${icon("X")}</button><p class="eyebrow">Šodienas darbi</p><h2>${tasks.length} ${tasks.length === 1 ? "uzdevums" : "uzdevumi"}</h2><p>Atvēršana darbu nepieņem. Izvēlies darbu un nospied “Pieņemt”.</p><div class="daily-task-list">${tasks.map((task) => `<button ${task.id ? `data-open-work-item="${escapeHtml(task.id)}"` : `data-daily-batch="${escapeHtml(task.batch.id)}"`} class="daily-task ${escapeHtml(task.tone)}"><span class="tank-number">${escapeHtml(task.batch.fermenterNumber)}</span><span><strong>${escapeHtml(task.beerName)}</strong><small>#${escapeHtml(task.batch.batchNumber)} · ${escapeHtml(task.label)}</small></span>${icon("ChevronRight")}</button>`).join("")}</div><button class="secondary full" data-close-daily>Aizvērt</button></div>`;
   document.body.append(dialog);
   dialog.addEventListener("close", () => dialog.remove());
   dialog.addEventListener("click", (event) => {
@@ -429,6 +502,8 @@ function showDailyTasks(sendSystemNotification = false) {
       dialog.close();
       render();
     }
+    const workButton = event.target.closest("[data-open-work-item]");
+    if (workButton) { dialog.close(); workItemDialog(workButton.dataset.openWorkItem); }
   });
   dialog.showModal();
 
@@ -616,6 +691,7 @@ function measurementTable(batch) {
 async function submitMeasurement(form) {
   try {
     const data = Object.fromEntries(new FormData(form));
+    if (!await ensureAcceptedWork(selectedBatchId, data.actionType || "measure")) return;
     const batch = state.batches.find((item) => item.id === selectedBatchId);
     const measuredAt = new Date(data.measuredAt).toISOString();
     let processActionId = null;
@@ -630,9 +706,10 @@ async function submitMeasurement(form) {
     }
     const measurement = { id: crypto.randomUUID(), version: 0, measuredAt, gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), note: data.note.trim(), operatorId: currentOperator().id, processActionId, actionType: data.actionType || null };
     batch.measurements.push(measurement);
+    const workItem=acceptedWorkItem(batch.id,data.actionType || "measure");
     if (data.actionType) {
-      if (!await saveAndSync({ entity: "processBundle", operation: "apply", batchId: batch.id, actionId: processActionId, measurementId: measurement.id })) return;
-    } else if (!await saveAndSync({ entity: "measurement", operation: "create", entityId: measurement.id })) return;
+      if (!await saveAndSync({ entity: "processBundle", operation: "apply", batchId: batch.id, actionId: processActionId, measurementId: measurement.id, workItemId:workItem.id, workItemVersion:workItem.version })) return;
+    } else if (!await saveAndSync({ entity: "measurement", operation: "create", entityId: measurement.id, workItemId:workItem.id, workItemVersion:workItem.version })) return;
     render();
   } catch (error) { document.querySelector("#measurement-error").textContent = error.message; }
 }
@@ -667,7 +744,8 @@ async function createPackagingRun(form) {
     if (volumeTons <= 0 || volumeTons > 4 || volumeTons > remaining) throw new Error(`Atļauts filtrēt ne vairāk kā ${Math.min(4, remaining)} t.`);
     const run = { id: crypto.randomUUID(), version: 0, clientId: crypto.randomUUID(), runNumber: (batch.packagingRuns || []).length + 1, volumeTons, centrifugeLiters: data.centrifugeLiters === "" ? null : Number(data.centrifugeLiters), status: "filtered", filteredAt: new Date(data.filteredAt).toISOString(), packagedAt: null, gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), co2Vol: null, operatorId: currentOperator().id };
     batch.packagingRuns ||= []; batch.packagingRuns.push(run);
-    if (!await saveAndSync({ entity: "packagingRun", operation: "create", entityId: run.id })) return;
+    const workItem=acceptedWorkItem(batch.id,"filter");
+    if (!await saveAndSync({ entity: "packagingRun", operation: "create", entityId: run.id, workItemId:workItem.id, workItemVersion:workItem.version })) return;
     render();
   } catch (error) { alert(error.message); }
 }
@@ -695,8 +773,12 @@ async function finishPackagingRun(runId, form) {
     }
     if (batch.status === BATCH_STATUS.FINISHED) {
       const finishAction = batch.actions.find((item) => item.type === ACTION_TYPES.FINISH);
-      if (!await saveAndSync({ entity: "packagingCompletion", operation: "apply", batchId: batch.id, packagingRunId: run.id, actionId: finishAction.id })) return;
-    } else if (!await saveAndSync({ entity: "packagingRun", operation: "update", entityId: run.id })) return;
+      const workItem=acceptedWorkItem(batch.id,"package");
+      if (!await saveAndSync({ entity: "packagingCompletion", operation: "apply", batchId: batch.id, packagingRunId: run.id, actionId: finishAction.id, workItemId:workItem.id, workItemVersion:workItem.version })) return;
+    } else {
+      const workItem=acceptedWorkItem(batch.id,"package");
+      if (!await saveAndSync({ entity: "packagingRun", operation: "update", entityId: run.id, workItemId:workItem.id, workItemVersion:workItem.version })) return;
+    }
     render();
   } catch (error) { alert(error.message); }
 }
@@ -713,17 +795,28 @@ async function completeAction(type, form) {
     if (type === ACTION_TYPES.FINISH) batch.status = BATCH_STATUS.FINISHED;
     const actionMeasurement = { id: crypto.randomUUID(), version: 0, measuredAt: action.performedAt, gravity: action.gravity, ph: action.ph, temperature: action.temperature, pressure: action.pressure, note: ACTION_LABELS[type], operatorId: action.operatorId, processActionId: action.id, actionType: type };
     batch.measurements.push(actionMeasurement);
-    if (!await saveAndSync({ entity: "processBundle", operation: "apply", batchId: batch.id, actionId: action.id, measurementId: actionMeasurement.id })) return;
+    const workItem=acceptedWorkItem(batch.id,type);
+    if (!await saveAndSync({ entity: "processBundle", operation: "apply", batchId: batch.id, actionId: action.id, measurementId: actionMeasurement.id, workItemId:workItem.id, workItemVersion:workItem.version })) return;
     render();
   } catch (error) { alert(error.message); }
 }
 
 function tasksPage() {
-  const timeline = buildWorkTimeline(state.batches);
+  const timeline = (state.workItems || []).filter((item) => !["completed", "skipped"].includes(item.status)).map((item) => ({
+    ...item, date: rigaDateKey(item.dueAt), tone: workUrgency(item),
+  })).sort((a,b) => a.dueAt.localeCompare(b.dueAt));
   const horizon = addDays(today(), 3);
   const upcoming = timeline.filter((task) => task.date <= horizon);
   const later = timeline.filter((task) => task.date > horizon);
-  shell(`<main><section class="page-heading"><div><p class="eyebrow">Procesa kalendārs</p><h1>Darbu plāns</h1><p>Šodienas darbi un prognoze uz priekšu pēc iepriekšējām tā paša alus partijām.</p></div></section><section class="planning-summary"><article><strong>${timeline.filter((task) => task.date === today()).length}</strong><span>darbi šodien</span></article><article><strong>${upcoming.filter((task) => task.date > today()).length}</strong><span>nākamajās 3 dienās</span></article><article><strong>${later.length}</strong><span>ieplānoti vēlāk</span></article></section><section class="timeline-panel"><div class="panel-title"><div><h2>Šodiena un nākamās trīs dienas</h2><p>Piektdien pārbaudi šo sarakstu pirms došanās prom.</p></div></div>${renderTimeline(upcoming, "Tuvākajās dienās prognozētu darbu nav.")}</section><section class="timeline-panel later-timeline"><div class="panel-title"><div><h2>Vēlākie darbi</h2><p>Hronoloģiska prognoze visām aktīvajām partijām.</p></div></div>${renderTimeline(later, "Vēlāku darbu prognozei vēl nepietiek vēsturisko datu.")}</section></main>`, "Darbu plāns");
+  const completedToday=(state.workItems||[]).filter((item)=>item.status==="completed" && item.completedAt && rigaDateKey(item.completedAt)===today());
+  shell(`<main><section class="page-heading"><div><p class="eyebrow">Procesa kalendārs</p><h1>Darbu plāns</h1><p>Katrs darbs ir jāpieņem un pēc izpildes atsevišķi jāapstiprina.</p></div></section><section class="planning-summary"><article><strong>${timeline.filter((task) => task.tone === "overdue").length}</strong><span>kavēti</span></article><article><strong>${timeline.filter((task) => task.date === today()).length}</strong><span>šodien</span></article><article><strong>${upcoming.filter((task) => task.date > today()).length}</strong><span>nākamajās 3 dienās</span></article></section><section class="timeline-panel"><div class="panel-title"><div><h2>Šodiena un nākamās trīs dienas</h2><p>Piektdien pārbaudi šo sarakstu pirms došanās prom.</p></div></div>${renderTimeline(upcoming, "Tuvākajās dienās darbu nav.")}</section><section class="timeline-panel later-timeline"><div class="panel-title"><div><h2>Vēlākie darbi</h2><p>Hronoloģiska prognoze visām aktīvajām partijām.</p></div></div>${renderTimeline(later, "Vēlāku darbu prognozei vēl nepietiek vēsturisko datu.")}</section>${completedToday.length?`<section class="timeline-panel completed-work"><div class="panel-title"><h2>Šodien izpildīts</h2><span>${completedToday.length}</span></div>${completedToday.map((item)=>{const accepted=state.operators.find((operator)=>operator.id===item.acceptedBy)?.name||"—";const completed=state.operators.find((operator)=>operator.id===item.completedBy)?.name||"—";return `<div class="completed-work-row">${icon("CircleCheckBig",20)}<span><strong>${escapeHtml(item.label)}</strong><small>Pieņēma: ${escapeHtml(accepted)} ${item.acceptedAt?new Date(item.acceptedAt).toLocaleTimeString("lv-LV",{hour:"2-digit",minute:"2-digit"}):""} · Izpildīja: ${escapeHtml(completed)} ${new Date(item.completedAt).toLocaleTimeString("lv-LV",{hour:"2-digit",minute:"2-digit"})}</small></span></div>`;}).join("")}</section>`:""}</main>`, "Darbu plāns");
+}
+
+function workUrgency(item) {
+  const date = rigaDateKey(item.dueAt);
+  if (date < today()) return "overdue";
+  if (date === today()) return "today";
+  return date <= addDays(today(),3) ? "info" : "planned";
 }
 
 function renderTimeline(items, emptyMessage) {
@@ -738,7 +831,80 @@ function renderTimeline(items, emptyMessage) {
 function timelineTask(task) {
   const batch = state.batches.find((item) => item.id === task.batchId);
   const beer = batch && state.beerTypes.find((item) => item.id === batch.beerTypeId);
-  return `<button class="timeline-task ${task.tone}" data-open-batch="${task.batchId}"><span class="tank-number">${batch?.fermenterNumber || "?"}</span><span><strong>${task.label}</strong><small>${escapeHtml(beer?.name || "Nezināms alus")} · #${batch?.batchNumber || "—"}${task.source === "history" ? ` · prognoze no ${task.sampleCount} ${task.sampleCount === 1 ? "partijas" : "partijām"}` : ""}</small></span>${icon("ChevronRight")}</button>`;
+  const status = task.status === "accepted" ? `Pieņēma: ${state.operators.find((operator) => operator.id === task.acceptedBy)?.name || "operators"}` : task.status === "postponed" ? "Atlikts" : "Jāizdara";
+  return `<button class="timeline-task ${task.tone}" data-open-work-item="${task.id}"><span class="tank-number">${batch?.fermenterNumber || "?"}</span><span><strong>${escapeHtml(task.label)}</strong><small>${escapeHtml(beer?.name || "Nezināms alus")} · #${escapeHtml(batch?.batchNumber || "—")} · ${escapeHtml(status)}</small></span><span class="urgency-badge ${task.tone}">${task.tone === "overdue" ? "Kavēts" : task.tone === "today" ? "Šodien" : task.tone === "info" ? "Drīzumā" : "Plānots"}</span>${icon("ChevronRight")}</button>`;
+}
+
+function workItemDialog(workItemId) {
+  const item = (state.workItems || []).find((candidate) => candidate.id === workItemId);
+  if (!item) return;
+  const batch = state.batches.find((candidate) => candidate.id === item.batchId);
+  const beer = state.beerTypes.find((candidate) => candidate.id === batch?.beerTypeId);
+  const acceptedName = state.operators.find((operator) => operator.id === item.acceptedBy)?.name;
+  const events = (state.workItemEvents || []).filter((entry) => entry.workItemId === item.id).slice(-6).reverse();
+  const dialog = document.createElement("dialog");
+  dialog.innerHTML = `<div class="dialog-card work-dialog"><button class="dialog-close" data-close-work>${icon("X")}</button><p class="eyebrow">${workUrgency(item) === "overdue" ? "Kavēts darbs" : "Procesa darbs"}</p><h2>${escapeHtml(item.label)}</h2><p>${escapeHtml(beer?.name || "Alus")} · ${batch ? `Tvertne ${batch.fermenterNumber} · #${escapeHtml(batch.batchNumber)}` : ""}</p><div class="work-meta"><span>Termiņš <strong>${formatDate(item.dueAt)}</strong></span><span>Statuss <strong>${item.status === "accepted" ? `Pieņēma ${escapeHtml(acceptedName || "operators")}` : item.status === "postponed" ? "Atlikts" : "Jāizdara"}</strong></span></div><div class="dialog-actions work-actions">${item.status !== "accepted" ? `<button class="primary" data-work-transition="accept">${icon("CheckCheck",17)} Pieņemt</button>` : `<button class="primary" data-work-open-batch>${icon("CircleCheck",17)} Izpildīt un apstiprināt</button>`}<button class="secondary" data-work-transition="postpone">Atlikt</button><button class="text-button" data-work-transition="skip">Izlaist</button></div>${events.length ? `<div class="work-event-list"><h3>Vēsture</h3>${events.map((entry) => `<small>${formatDate(entry.createdAt)} · ${escapeHtml(workEventLabel(entry.type))}${entry.reason ? ` · ${escapeHtml(entry.reason)}` : ""}</small>`).join("")}</div>` : ""}</div>`;
+  document.body.append(dialog); dialog.showModal();
+  dialog.addEventListener("close",()=>dialog.remove());
+  dialog.addEventListener("click",async(event)=>{
+    if(event.target===dialog || event.target.closest("[data-close-work]")){dialog.close();return;}
+    if(event.target.closest("[data-work-open-batch]")){selectedBatchId=item.batchId;route="batch";dialog.close();render();return;}
+    const button=event.target.closest("[data-work-transition]");
+    if(!button)return;
+    const transition=button.dataset.workTransition;
+    let reason=null,newDueAt=null;
+    if(["postpone","skip"].includes(transition)){
+      const result=await workReasonDialog(transition);
+      if(!result)return;
+      ({reason,newDueAt}=result);
+    }
+    try { await transitionWorkItem(item,transition,{reason,newDueAt}); dialog.close(); render(); }
+    catch(error){alert(`Darbu neizdevās mainīt: ${friendlySyncError(error)}`);}
+  });
+}
+
+function workEventLabel(type) {
+  return ({created:"Izveidots",accepted:"Pieņemts",completed:"Izpildīts",postponed:"Atlikts",skipped:"Izlaists",reopened:"Atvērts no jauna"})[type] || type;
+}
+
+function workReasonDialog(transition) {
+  return new Promise((resolve) => {
+    const postpone=transition==="postpone";
+    const dialog=document.createElement("dialog");
+    dialog.innerHTML=`<form method="dialog" class="dialog-card work-reason-dialog"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow">${postpone?"Atlikt darbu":"Izlaist darbu"}</p><h2>${postpone?"Norādi jauno termiņu":"Paskaidro iemeslu"}</h2><div class="measurement-form"><div class="field full"><label>Iemesls</label><textarea name="reason" rows="3" required></textarea></div>${postpone?`<div class="field full"><label>Jaunais datums un laiks</label><input name="dueAt" type="datetime-local" value="${addDays(today(),1)}T07:00" required></div>`:""}<div class="form-error full" data-work-reason-error></div><button class="primary full" value="default">${postpone?"Atlikt":"Izlaist"}</button></div></form>`;
+    document.body.append(dialog);dialog.showModal();
+    dialog.addEventListener("close",()=>{
+      if(dialog.returnValue!=="default"){dialog.remove();resolve(null);return;}
+      const data=Object.fromEntries(new FormData(dialog.querySelector("form")));
+      const reason=data.reason?.trim();
+      if(!reason){dialog.querySelector("[data-work-reason-error]").textContent="Iemesls ir obligāts.";dialog.showModal();return;}
+      const newDueAt=postpone?rigaLocalDateTimeToIso(data.dueAt.slice(0,10),Number(data.dueAt.slice(11,13)),Number(data.dueAt.slice(14,16))):null;
+      dialog.remove();resolve({reason,newDueAt});
+    });
+  });
+}
+
+async function transitionWorkItem(item, transition, { reason=null, newDueAt=null, measurementId=null, actionId=null }={}) {
+  if(!navigator.onLine) throw new Error("Darba pieņemšanai vai statusa maiņai nepieciešams internets, lai divi operatori to nepaņemtu reizē.");
+  const { error }=await supabase.rpc("transition_work_item",{session_token:operatorSessionToken(),target_work_item_id:item.id,transition,expected_version:item.version,reason,new_due_at:newDueAt,measurement_id:measurementId,action_id:actionId});
+  if(error)throw error;
+  await refreshRemoteState();
+}
+
+function acceptedWorkItem(batchId,type){
+  const item=(state.workItems || []).find((candidate)=>candidate.batchId===batchId && candidate.type===type && candidate.status==="accepted");
+  if(!item)throw new Error("Darbs vispirms jāpieņem.");
+  return item;
+}
+
+async function ensureAcceptedWork(batchId, type) {
+  const open=(state.workItems || []).find((candidate)=>candidate.batchId===batchId && candidate.type===type && !["completed","skipped"].includes(candidate.status));
+  if(!open){alert("Šim procesam nav izveidots darba ieraksts. Atjauno Darbu sadaļu un mēģini vēlreiz.");return false;}
+  if(open.status==="accepted")return true;
+  if(!navigator.onLine){alert("Pirms izpildes darbs ir jāpieņem tiešsaistē.");return false;}
+  if(!confirm(`Pirms izpildes pieņemt darbu “${open.label}”?`))return false;
+  try{await transitionWorkItem(open,"accept");return true;}
+  catch(error){alert(`Darbu neizdevās pieņemt: ${friendlySyncError(error)}`);return false;}
 }
 
 function analyticsPage() {
@@ -879,11 +1045,13 @@ document.addEventListener("click", async (event) => {
   if (newButton) { route = "new-batch"; newBatchForm(newButton.dataset.tank || ""); return; }
   const batchButton = event.target.closest("[data-open-batch]");
   if (batchButton) { selectedBatchId = batchButton.dataset.openBatch; route = "batch"; render(); return; }
+  const workItemButton = event.target.closest("[data-open-work-item]");
+  if (workItemButton) { workItemDialog(workItemButton.dataset.openWorkItem); return; }
   const actionButton = event.target.closest("[data-batch-action]");
-  if (actionButton) { actionDialog(actionButton.dataset.batchAction); return; }
-  if (event.target.closest("[data-filter-to-brite]")) { filterToBriteDialog(); return; }
+  if (actionButton) { if(await ensureAcceptedWork(selectedBatchId,actionButton.dataset.batchAction))actionDialog(actionButton.dataset.batchAction); return; }
+  if (event.target.closest("[data-filter-to-brite]")) { if(await ensureAcceptedWork(selectedBatchId,"filter"))filterToBriteDialog(); return; }
   const finishPackagingButton = event.target.closest("[data-finish-packaging]");
-  if (finishPackagingButton) { finishPackagingDialog(finishPackagingButton.dataset.finishPackaging); return; }
+  if (finishPackagingButton) { if(await ensureAcceptedWork(selectedBatchId,"package"))finishPackagingDialog(finishPackagingButton.dataset.finishPackaging); return; }
   const deleteBatchButton = event.target.closest("[data-delete-batch]");
   if (deleteBatchButton) { deleteBatchDialog(deleteBatchButton.dataset.deleteBatch); return; }
   const restoreBatchButton = event.target.closest("[data-restore-batch]");

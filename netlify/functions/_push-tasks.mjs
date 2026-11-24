@@ -55,6 +55,17 @@ export function rigaDateKey(value = new Date()) {
   }).format(new Date(value));
 }
 
+export function rigaLocalDateTimeIso(dateKey, hour = 7, minute = 0) {
+  const desired = Date.UTC(Number(dateKey.slice(0,4)),Number(dateKey.slice(5,7))-1,Number(dateKey.slice(8,10)),hour,minute);
+  let instant=desired;
+  for(let attempt=0;attempt<2;attempt+=1){
+    const parts=Object.fromEntries(new Intl.DateTimeFormat("en-CA",{timeZone:"Europe/Riga",hour12:false,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}).formatToParts(new Date(instant)).filter((part)=>part.type!=="literal").map((part)=>[part.type,part.value]));
+    const represented=Date.UTC(Number(parts.year),Number(parts.month)-1,Number(parts.day),Number(parts.hour)%24,Number(parts.minute));
+    instant+=desired-represented;
+  }
+  return new Date(instant).toISOString();
+}
+
 function daysBetween(start, end) {
   return Math.round((new Date(`${end}T00:00:00Z`) - new Date(`${start}T00:00:00Z`)) / 86_400_000);
 }

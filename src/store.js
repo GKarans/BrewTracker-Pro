@@ -13,6 +13,8 @@ const defaultState = {
   fermenters: [],
   batches: [],
   deletedBatches: [],
+  workItems: [],
+  workItemEvents: [],
   pendingSync: [],
   breweryDataVersion: null,
 };

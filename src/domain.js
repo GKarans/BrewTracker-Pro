@@ -190,7 +190,7 @@ export function buildWorkTimeline(batches, date = new Date()) {
       return [{
         batchId: batch.id,
         type: `prediction_${type}`,
-        date: overdue ? dateKey : predictedDate,
+        date: predictedDate,
         predictedDate,
         label: overdue ? `Pārbaudi — prognozēts: ${ACTION_LABELS[type]}` : `Prognozēts: ${ACTION_LABELS[type]}`,
         tone: overdue ? "urgent" : "planned",
@@ -203,7 +203,5 @@ export function buildWorkTimeline(batches, date = new Date()) {
 }
 
 function localDateKey(value) {
-  const date = value instanceof Date ? value : new Date(value);
-  const offset = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offset).toISOString().slice(0, 10);
+  return new Intl.DateTimeFormat("en-CA", { timeZone:"Europe/Riga", year:"numeric", month:"2-digit", day:"2-digit" }).format(value instanceof Date ? value : new Date(value));
 }

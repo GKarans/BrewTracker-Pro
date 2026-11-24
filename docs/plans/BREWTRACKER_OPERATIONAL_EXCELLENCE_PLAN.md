@@ -151,14 +151,14 @@ Implementation status (2026-11-24): operator sessions and session-attributed syn
 
 ### Verification checklist
 
-- [ ] Two operators attempting to accept simultaneously produce one owner, not two.
-- [ ] Push opening leaves status unchanged.
-- [ ] Completion records both accepting and completing operators.
-- [ ] Postpone/skip cannot save without a reason.
-- [ ] Info appears three days ahead but is not pushed.
-- [ ] Today and overdue notifications are sent at most once per configured notification day/device.
-- [ ] 8 t two-cycle filtering creates the correct separate tasks.
-- [ ] Offline device cannot overwrite a newer server-side task claim.
+- [x] Two operators attempting to accept simultaneously produce one owner, not two (row lock + version compare-and-set).
+- [x] Push opening leaves status unchanged.
+- [x] Completion records both accepting and completing operators.
+- [x] Postpone/skip cannot save without a reason.
+- [x] Info appears three days ahead but is not pushed.
+- [x] Today and overdue notifications are sent at most once per configured notification day/device.
+- [x] 8 t two-cycle filtering creates separate occurrence keys.
+- [x] Offline task claims fail closed; a device cannot overwrite a newer server-side claim.
 
 ### Anti-pattern guards
 
