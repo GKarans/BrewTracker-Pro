@@ -54,6 +54,53 @@ export function remainingInFermenter(batch) {
   return Math.max(0, Number(batch.volumeTons) - filteredVolume(batch));
 }
 
+// The brewery's centrifuge meter is deliberately NOT used in these
+// calculations as product output: it includes discharge/cleaning liquid.
+// A stage is only calculated when both sides of that stage were measured.
+export function estimatedKettleResidueLiters(volumeTons) {
+  return Math.ceil(Number(volumeTons) / 2) * 150;
+}
+
+export function estimatedFermenterHeelLiters(volumeTons) {
+  return Number(volumeTons) > 4 ? 350 : 200;
+}
+
+export function calculateLossLedger(batch) {
+  const runs = batch.packagingRuns || [];
+  const measured = (key) => runs.filter((run) => run[key] != null).reduce((total, run) => total + Number(run[key]), 0);
+  const sourceRuns = runs.filter((run) => run.sourceDrawnLiters != null);
+  const briteRuns = runs.filter((run) => run.briteReceivedLiters != null);
+  const packagedRuns = runs.filter((run) => run.packagedLiters != null);
+  const grossRuns = runs.filter((run) => run.centrifugeLiters != null);
+  const sourceLiters = sourceRuns.length ? measured("sourceDrawnLiters") : null;
+  const briteLiters = briteRuns.length ? measured("briteReceivedLiters") : null;
+  const packagedLiters = packagedRuns.length ? measured("packagedLiters") : null;
+  const centrifugeGrossLiters = grossRuns.length ? measured("centrifugeLiters") : null;
+  const stageDifference = (from, to) => from != null && to != null ? from - to : null;
+  const percent = (amount, base) => amount != null && base ? (amount / base) * 100 : null;
+  const expectedCycles = requiredPackagingRuns(batch.volumeTons);
+  const sourceReleased = runs.filter((run) => run.status === "packaged").length >= expectedCycles;
+  const nominalLiters = Number(batch.volumeTons) * 1000;
+  return {
+    nominalLiters,
+    kettleResidueEstimateLiters: estimatedKettleResidueLiters(batch.volumeTons),
+    fermenterHeelEstimateLiters: sourceReleased ? estimatedFermenterHeelLiters(batch.volumeTons) : null,
+    sourceLiters,
+    briteLiters,
+    packagedLiters,
+    centrifugeGrossLiters,
+    // This is a system difference, not a claimed beer loss: gross includes
+    // water/product expelled during centrifuge discharge and cleaning.
+    centrifugeSystemDifferenceLiters: stageDifference(centrifugeGrossLiters, briteLiters),
+    sourceToBriteLossLiters: stageDifference(sourceLiters, briteLiters),
+    briteToPackageLossLiters: stageDifference(briteLiters, packagedLiters),
+    totalNominalToPackageDifferenceLiters: stageDifference(nominalLiters, packagedLiters),
+    sourceToBriteLossPercent: percent(stageDifference(sourceLiters, briteLiters), sourceLiters),
+    briteToPackageLossPercent: percent(stageDifference(briteLiters, packagedLiters), briteLiters),
+    yieldPercent: percent(packagedLiters, nominalLiters),
+  };
+}
+
 export function formatBatchNumber(year, sequence, fermenterNumber) {
   const shortYear = String(year).slice(-2);
   if (!Number.isInteger(sequence) || sequence < 1 || sequence > 999) {

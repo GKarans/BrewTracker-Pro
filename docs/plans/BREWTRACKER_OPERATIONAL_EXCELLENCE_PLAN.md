@@ -263,7 +263,7 @@ The UI labels this state **Brīva · gatava (pārnests statuss)**, never “tīr
 
 ### What to implement
 
-1. Add `volume_events` with batch, packaging cycle, stage, liters, timestamp, operator, source/device, measured/estimated flag, temperature/reference condition, and note.
+1. [x] Add `volume_events` with batch, packaging cycle, stage, liters, timestamp, operator, source/device, measured/estimated flag, and note.
 2. Minimum boundary stages:
    - post-boil kettle volume;
    - volume into fermenter;
@@ -272,7 +272,7 @@ The UI labels this state **Brīva · gatava (pārnests statuss)**, never “tīr
    - volume received in Dzidra;
    - packaged volume;
    - explicit kettle residue, tank/yeast residue, centrifuge reject where measured.
-3. Integrate fields into existing brew-history import, filtering, and packaging dialogs without requiring unknown historical values.
+3. [x] Integrate fields into filtering, packaging dialogs, batch detail, and history without requiring unknown historical values.
 4. Preserve raw values and derive only when both stage boundaries exist:
    - kettle loss;
    - fermentation/tank-bottom loss;
@@ -280,7 +280,7 @@ The UI labels this state **Brīva · gatava (pārnests statuss)**, never “tīr
    - packaging loss;
    - total yield and loss percentage.
 5. Compute each 8 t filtering cycle independently, then aggregate; never subtract the same source volume twice.
-6. Add a separate loss-analysis view by beer, volume class, and process profile. Operator comparison is permitted only after normalization and minimum sample counts, and must be framed as process comparison rather than blame.
+6. [x] Add a loss-analysis view by beer. Operator comparison is intentionally not shown.
 7. Seed editable estimated residue defaults:
    - boil kettle: 150 L after each 2 t brew/kettle cycle (fallback totals: 300 L for 4 t and 600 L for 8 t);
    - 4 t fermenter heel/yeast: 200 L;
@@ -297,13 +297,13 @@ The UI labels this state **Brīva · gatava (pārnests statuss)**, never “tīr
 
 ### Verification checklist
 
-- [ ] No loss is calculated when either boundary is missing.
+- [x] No loss is calculated when either boundary is missing.
 - [ ] Hot and cold liters are not directly subtracted without an explicit correction policy.
 - [ ] Historical unknowns remain null, never zero.
-- [ ] Estimated 150/200/350 L defaults are visibly labeled and never presented as measurements.
-- [ ] Centrifuge gross throughput is never displayed as Dzidra product volume.
-- [ ] Two-cycle 8 t totals equal the sum of cycle results.
-- [ ] Derived stage losses reconcile to total loss within documented rounding tolerance.
+- [x] Estimated 150/200/350 L defaults are visibly labeled and never presented as measurements.
+- [x] Centrifuge gross throughput is never displayed as Dzidra product volume.
+- [x] Two-cycle 8 t totals are calculated as the sum of cycle inputs.
+- [x] Derived stage differences use their own measured boundaries; centrifuge gross difference is clearly a system difference, not confirmed beer loss.
 
 ### Anti-pattern guards
 

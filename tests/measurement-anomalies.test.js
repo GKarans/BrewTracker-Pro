@@ -25,8 +25,8 @@ describe("servera mērījumu noviržu aizsardzība", () => {
   });
 
   it("vecos rakstīšanas RPC aizstāj ar anomāliju konteksta versiju", () => {
-    expect(sync).toContain('"sync_operator_work_event_v3"');
-    expect(sync).toContain('"sync_operator_event_v3"');
+    expect(sync).toContain('"sync_operator_work_event_v4"');
+    expect(sync).toContain('"sync_operator_event_v4"');
     expect(migration).toContain("revoke all on function public.sync_operator_event_v2");
   });
 

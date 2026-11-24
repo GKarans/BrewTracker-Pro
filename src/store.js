@@ -17,6 +17,7 @@ const defaultState = {
   workItemEvents: [],
   cleaningCycles: [],
   cleaningEvents: [],
+  volumeEvents: [],
   pendingSync: [],
   breweryDataVersion: null,
 };

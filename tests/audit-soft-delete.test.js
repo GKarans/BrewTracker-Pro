@@ -22,7 +22,7 @@ describe("audited reversible history", () => {
 
   it("routes writes through the versioned RPC and excludes deleted rows", async () => {
     const sync = await readFile(syncUrl, "utf8");
-    expect(sync).toContain('event.workItemId ? "sync_operator_work_event_v3" : "sync_operator_event_v3"');
+    expect(sync).toContain('event.workItemId ? "sync_operator_work_event_v4" : "sync_operator_event_v4"');
     expect(sync).toContain("expected_version: event.expectedVersion ?? event.expectedVersions?.batch ?? 0");
     expect(sync).toContain("filter((item) => !item.deleted_at)");
     expect(sync).toContain('supabase.rpc("list_deleted_batches"');

@@ -49,7 +49,7 @@ describe("operator session migration", () => {
 
   it("routes browser synchronization through the trusted RPC only", async () => {
     const sync = await readFile(syncUrl, "utf8");
-    expect(sync).toContain('event.workItemId ? "sync_operator_work_event_v3" : "sync_operator_event_v3"');
+    expect(sync).toContain('event.workItemId ? "sync_operator_work_event_v4" : "sync_operator_event_v4"');
     expect(sync).not.toMatch(/supabase\.from\("(?:batches|beer_types|measurements|process_actions|packaging_runs)"\)\.(?:upsert|update|delete|insert)/);
     expect(sync).not.toMatch(/operator_id:\s*item\.operatorId/);
   });
