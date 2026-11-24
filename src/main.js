@@ -3,7 +3,7 @@ import { icons, createElement } from "lucide";
 import { ACTION_LABELS, ACTION_TYPES, BATCH_STATUS, FERMENTERS, addDays, buildWorkTimeline, calculateHistoryStats, calculateLossLedger, completedPackagingVolume, detectMeasurementWarnings, formatBatchNumber, getDailyTasks, getFermenter, getRecommendedAction, packagingCyclesComplete, remainingInFermenter, requiredPackagingRuns, validateCo2, validateGravity, validatePh, validatePressure, validateTemperature } from "./domain.js";
 import { loadState, saveState } from "./store.js";
 import { isSupabaseConfigured, supabase } from "./supabase.js";
-import { fetchRemoteState, syncEvent } from "./sync.js";
+import { fetchRemoteState, importBeerSmithHistory, syncEvent } from "./sync.js";
 import { ANALYSIS_METRICS, averageCurve, carbonationReadiness, comparableBatches, fermentationMetrics, sameProfileBatches, seriesForBatch } from "./analytics.js";
 import { BACKUP_SCHEMA_VERSION, EXPORT_TABLES, canonicalJson, archivePayload, createBackupArchive, downloadText, toCsv, validateBackupArchive } from "./backup.js";
 
@@ -736,7 +736,7 @@ function actionButton(batch, type) {
 
 function measurementTable(batch) {
   if (!batch.measurements.length) return `<div class="empty-state">${icon("Gauge", 34)}<p>Vēl nav neviena mērījuma.</p></div>`;
-  return `<div class="table-wrap"><table><thead><tr><th>Laiks</th><th>Darbība</th><th>Blīvums</th><th>pH</th><th>°C</th><th>bar</th><th>CO₂</th><th>Kvalitāte</th><th>Operators</th></tr></thead><tbody>${[...batch.measurements].reverse().map((item) => `<tr><td>${new Date(item.measuredAt).toLocaleString("lv-LV", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</td><td>${item.actionType ? `<span class="action-tag">${ACTION_LABELS[item.actionType]}</span>` : "—"}</td><td><strong>${item.gravity}</strong></td><td>${item.ph}</td><td>${item.temperature}</td><td>${item.pressure ?? "—"}</td><td>${item.co2Vol ?? "—"}</td><td>${anomalyDetails(item)}</td><td>${escapeHtml(state.operators.find((op) => op.id === item.operatorId)?.name || "—")}</td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Laiks</th><th>Darbība</th><th>Blīvums</th><th>pH</th><th>°C</th><th>bar</th><th>CO₂</th><th>Kvalitāte</th><th>Operators</th></tr></thead><tbody>${[...batch.measurements].reverse().map((item) => `<tr><td>${new Date(item.measuredAt).toLocaleString("lv-LV", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</td><td>${item.actionType ? `<span class="action-tag">${ACTION_LABELS[item.actionType]}</span>` : "—"}</td><td><strong>${item.gravity ?? "—"}</strong></td><td>${item.ph ?? "—"}</td><td>${item.temperature ?? "—"}</td><td>${item.pressure ?? "—"}</td><td>${item.co2Vol ?? "—"}</td><td>${anomalyDetails(item)}</td><td>${escapeHtml(state.operators.find((op) => op.id === item.operatorId)?.name || "—")}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
 const ANOMALY_LABELS = { gravity_increase: "Blīvums pieaudzis", ph_unusual: "Neparasts pH", temperature_jump: "Strauja temperatūras maiņa", pressure_high: "Spiediens tuvu 2 bar", duplicate: "Iespējams dublikāts", timestamp_old: "Atpakaļdatēts mērījums", timestamp_future: "Laiks ir nākotnē" };
@@ -1277,7 +1277,7 @@ function settingsPage() {
   const latestBackup=(state.backupExports || [])[0];
   const latestDrill=(state.backupRestoreDrills || [])[0];
   const backupStatus=latestBackup ? `Pēdējais eksports: ${new Date(latestBackup.exportedAt).toLocaleString("lv-LV")} · SHA-256 ${escapeHtml(latestBackup.checksum.slice(0,12))}…` : "Vēl nav reģistrēta lejupielādēta rezerves kopija.";
-  shell(`<main class="narrow"><section class="page-heading"><div><p class="eyebrow">Konfigurācija</p><h1>Iestatījumi</h1></div></section><section class="panel"><div class="panel-title"><h2>Operatori</h2><span>Katram operatoram ir savs PIN</span></div><div class="operator-list">${state.operators.map((operator) => `<div class="operator-row"><span class="avatar">${escapeHtml(operator.name.slice(0, 1).toUpperCase())}</span><strong>${escapeHtml(operator.name)}</strong>${operator.id === state.activeOperatorId ? `<span class="current-label">Aktīvs</span>` : ""}</div>`).join("")}<form id="operator-form" class="inline-form"><input name="name" placeholder="Jauna operatora vārds" required><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" placeholder="PIN (4–8 cipari)" required><button class="secondary">${icon("UserPlus")} Pievienot</button></form></div></section><section class="panel pin-panel"><div class="panel-title"><div><h2>Mainīt savu PIN</h2><p>Aktīvais operators: ${escapeHtml(currentOperator()?.name || "—")}</p></div><span>PIN netiek glabāts atklātā tekstā</span></div><form id="change-pin-form" class="pin-form"><div class="field"><label>Pašreizējais PIN</label><input name="currentPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Jaunais PIN</label><input name="newPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Atkārto jauno PIN</label><input name="newPinConfirm" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="auth-message full" id="pin-message"></div><button class="secondary full">${icon("KeyRound")} Nomainīt PIN</button></form></section><section class="panel notification-panel"><div><h2>${icon("BellRing")} Darbu paziņojumi</h2><p>Atverot aplikāciju un ieejot operatora profilā, parādīsies šodienas obligātie mērījumi un procesa darbības.</p></div><button class="secondary" data-enable-notifications>${"Notification" in window && Notification.permission === "granted" ? `${icon("CircleCheck")} Sistēmas paziņojumi ieslēgti` : `${icon("Bell")} Ieslēgt sistēmas paziņojumus`}</button></section><section class="panel backup-panel"><div class="panel-title"><div><p class="eyebrow">Pirmdienas drošības kopija</p><h2>Vēstures eksports un pārbaude</h2></div><span>${latestBackup ? "Pārbaudīts" : "Nepieciešams"}</span></div><p>JSON ir pilna atjaunošanai paredzēta kopija. CSV faili ir pārskatīšanai. PIN, operatoru sesijas un Push abonementi netiek eksportēti.</p><p class="backup-status">${backupStatus}</p><div class="backup-actions"><button class="primary" data-export-backup="json">${icon("Download",17)} Lejupielādēt pilnu JSON</button><button class="secondary" data-export-backup="csv">${icon("Files",17)} Lejupielādēt CSV failus</button><button class="secondary" data-restore-backup>${icon("ShieldCheck",17)} Pārbaudīt rezerves kopiju</button></div><small>Atjaunošana šajā produkcijas vidē ir tikai drošības pārbaude. Faktisku atjaunošanu vispirms veic atsevišķā testa Supabase projektā.</small>${latestDrill?`<p class="backup-status">Pēdējā pārbaude: ${new Date(latestDrill.createdAt).toLocaleString("lv-LV")} · ${latestDrill.status === "validated" ? "derīga" : "bloķēta"}</p>`:""}</section><section class="panel notice"><h2>${icon(isSupabaseConfigured ? "CloudCog" : "CloudOff")} ${isSupabaseConfigured ? "Supabase sinhronizācija aktīva" : "Lokālais režīms"}</h2><p>${isSupabaseConfigured ? "Tiešsaistē izmaiņas tiek nosūtītas uz kopīgo datubāzi. Bezsaistē tās paliek šajā ierīcē un tiks nosūtītas pēc interneta atjaunošanās." : "Dati droši glabājas šajā ierīcē ar IndexedDB."}</p><strong>${state.pendingSync.length} ieraksti gaida sinhronizāciju</strong></section><section class="panel reset-panel"><div><p class="eyebrow danger-text">Bīstamā zona</p><h2>Dzēst visus alus datus</h2><p>Neatgriezeniski dzēsīs visas partijas, mērījumus, darbības, filtrēšanas un pildīšanas vēsturi un alus tipus. Operatori, konts un tvertnes paliks.</p></div><button class="danger-button solid" data-reset-brewing-data>${icon("Trash2", 17)} Dzēst visu alus vēsturi</button></section></main>`, "Iestatījumi");
+  shell(`<main class="narrow"><section class="page-heading"><div><p class="eyebrow">Konfigurācija</p><h1>Iestatījumi</h1></div></section><section class="panel"><div class="panel-title"><h2>Operatori</h2><span>Katram operatoram ir savs PIN</span></div><div class="operator-list">${state.operators.map((operator) => `<div class="operator-row"><span class="avatar">${escapeHtml(operator.name.slice(0, 1).toUpperCase())}</span><strong>${escapeHtml(operator.name)}</strong>${operator.id === state.activeOperatorId ? `<span class="current-label">Aktīvs</span>` : ""}</div>`).join("")}<form id="operator-form" class="inline-form"><input name="name" placeholder="Jauna operatora vārds" required><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" placeholder="PIN (4–8 cipari)" required><button class="secondary">${icon("UserPlus")} Pievienot</button></form></div></section><section class="panel pin-panel"><div class="panel-title"><div><h2>Mainīt savu PIN</h2><p>Aktīvais operators: ${escapeHtml(currentOperator()?.name || "—")}</p></div><span>PIN netiek glabāts atklātā tekstā</span></div><form id="change-pin-form" class="pin-form"><div class="field"><label>Pašreizējais PIN</label><input name="currentPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Jaunais PIN</label><input name="newPin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="field"><label>Atkārto jauno PIN</label><input name="newPinConfirm" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required></div><div class="auth-message full" id="pin-message"></div><button class="secondary full">${icon("KeyRound")} Nomainīt PIN</button></form></section><section class="panel notification-panel"><div><h2>${icon("BellRing")} Darbu paziņojumi</h2><p>Atverot aplikāciju un ieejot operatora profilā, parādīsies šodienas obligātie mērījumi un procesa darbības.</p></div><button class="secondary" data-enable-notifications>${"Notification" in window && Notification.permission === "granted" ? `${icon("CircleCheck")} Sistēmas paziņojumi ieslēgti` : `${icon("Bell")} Ieslēgt sistēmas paziņojumus`}</button></section><section class="panel backup-panel"><div class="panel-title"><div><p class="eyebrow">Pirmdienas drošības kopija</p><h2>Vēstures eksports un pārbaude</h2></div><span>${latestBackup ? "Pārbaudīts" : "Nepieciešams"}</span></div><p>JSON ir pilna atjaunošanai paredzēta kopija. CSV faili ir pārskatīšanai. PIN, operatoru sesijas un Push abonementi netiek eksportēti.</p><p class="backup-status">${backupStatus}</p><div class="backup-actions"><button class="primary" data-export-backup="json">${icon("Download",17)} Lejupielādēt pilnu JSON</button><button class="secondary" data-export-backup="csv">${icon("Files",17)} Lejupielādēt CSV failus</button><button class="secondary" data-restore-backup>${icon("ShieldCheck",17)} Pārbaudīt rezerves kopiju</button></div><small>Atjaunošana šajā produkcijas vidē ir tikai drošības pārbaude. Faktisku atjaunošanu vispirms veic atsevišķā testa Supabase projektā.</small>${latestDrill?`<p class="backup-status">Pēdējā pārbaude: ${new Date(latestDrill.createdAt).toLocaleString("lv-LV")} · ${latestDrill.status === "validated" ? "derīga" : "bloķēta"}</p>`:""}</section><section class="panel history-import-panel"><div class="panel-title"><div><p class="eyebrow">BeerSmith vēsture</p><h2>Importēt vēsturiskas partijas</h2></div><span>JSON</span></div><p>Imports saglabā tikai avotā atrastos mērījumus. Tukšs pH, temperatūras, spiediena, CO₂ vai filtrācijas lauks paliek tukšs un netiek izmantots kā izdomāts mērījums. Importētās partijas ir pabeigta vēsture — tās neaizņem tvertnes un neveido šodienas darbus.</p><input id="history-import-file" type="file" accept="application/json,.json" hidden><button class="secondary" data-import-history>${icon("Upload",17)} Atlasīt BeerSmith importa failu</button></section><section class="panel notice"><h2>${icon(isSupabaseConfigured ? "CloudCog" : "CloudOff")} ${isSupabaseConfigured ? "Supabase sinhronizācija aktīva" : "Lokālais režīms"}</h2><p>${isSupabaseConfigured ? "Tiešsaistē izmaiņas tiek nosūtītas uz kopīgo datubāzi. Bezsaistē tās paliek šajā ierīcē un tiks nosūtītas pēc interneta atjaunošanās." : "Dati droši glabājas šajā ierīcē ar IndexedDB."}</p><strong>${state.pendingSync.length} ieraksti gaida sinhronizāciju</strong></section><section class="panel reset-panel"><div><p class="eyebrow danger-text">Bīstamā zona</p><h2>Dzēst visus alus datus</h2><p>Neatgriezeniski dzēsīs visas partijas, mērījumus, darbības, filtrēšanas un pildīšanas vēsturi un alus tipus. Operatori, konts un tvertnes paliks.</p></div><button class="danger-button solid" data-reset-brewing-data>${icon("Trash2", 17)} Dzēst visu alus vēsturi</button></section></main>`, "Iestatījumi");
 }
 
 function resetBrewingDataDialog() {
@@ -1296,6 +1296,34 @@ function resetBrewingDataDialog() {
     }
     dialog.remove();
   });
+}
+
+async function importBeerSmithHistoryFile(file) {
+  if (!file) return;
+  if (!navigator.onLine || !isSupabaseConfigured) {
+    alert("Vēsturisko datu imports ir iespējams tikai tiešsaistē ar Supabase savienojumu.");
+    return;
+  }
+  try {
+    const payload = JSON.parse(await file.text());
+    if (payload?.schema !== "brewtracker-beersmith-history-v1" || !Array.isArray(payload?.batches)) {
+      throw new Error("Fails nav BrewTracker BeerSmith vēstures imports.");
+    }
+    const rejected = Array.isArray(payload.rejected) ? payload.rejected : [];
+    const approved = window.confirm(
+      `Importēt ${payload.batches.length} BeerSmith vēsturiskās partijas?\n\n`
+      + `Tās tiks saglabātas kā pabeigta vēsture: neaizņems tvertnes un neveidos darbus. `
+      + `Tukšie vēsturiskie lauki paliks tukši.${rejected.length ? `\n\n${rejected.length} ieraksts netiks importēts, jo tam trūkst obligātā vārīšanas datuma.` : ""}`,
+    );
+    if (!approved) return;
+    const result = await importBeerSmithHistory(operatorSessionToken(), payload);
+    await refreshRemoteState();
+    route = "history";
+    render();
+    alert(`Vēsture importēta: ${result.imported} jaunas partijas${result.skipped ? `, ${result.skipped} jau bija datubāzē` : ""}.`);
+  } catch (error) {
+    alert(`BeerSmith vēsturi neizdevās importēt: ${friendlySyncError(error)}`);
+  }
 }
 
 async function resetAllBrewingData() {
@@ -1392,6 +1420,7 @@ document.addEventListener("click", async (event) => {
   const exportBackupButton=event.target.closest("[data-export-backup]");
   if(exportBackupButton){ await createAndDownloadBackup(exportBackupButton.dataset.exportBackup); return; }
   if(event.target.closest("[data-restore-backup]")){ restoreBackupDialog(); return; }
+  if(event.target.closest("[data-import-history]")){ document.querySelector("#history-import-file")?.click(); return; }
   if (event.target.closest("[data-reset-brewing-data]")) { resetBrewingDataDialog(); return; }
   if (event.target.closest("[data-show-daily-tasks]")) { showDailyTasks(); return; }
   if (event.target.closest("[data-enable-notifications]")) { enableNotifications(); return; }
@@ -1402,6 +1431,10 @@ document.addEventListener("change", (event) => {
   if (event.target.matches("[data-analysis-beer]")) {
     selectedAnalysisBeerId = event.target.value;
     render();
+  }
+  if (event.target.matches("#history-import-file")) {
+    importBeerSmithHistoryFile(event.target.files?.[0]);
+    event.target.value = "";
   }
 });
 
