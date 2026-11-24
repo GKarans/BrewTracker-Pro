@@ -48,7 +48,7 @@ describe("persisted brewery work", () => {
     expect(sql).toContain("function public.sync_operator_work_event");
     expect(sql).toContain("Darbības veids neatbilst pieņemtajam darbam");
     expect(sql).toContain("linked_packaging_run_id");
-    expect(sync).toContain('event.workItemId ? "sync_operator_work_event"');
+    expect(sync).toContain('event.workItemId ? "sync_operator_work_event_v3"');
   });
 
   it("uses Europe/Riga instead of a fixed UTC offset", async () => {

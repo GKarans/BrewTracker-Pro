@@ -236,12 +236,12 @@ begin
       end if;
       if resolved_action_id is null then raise exception 'Linked process action not found in this batch'; end if;
     end if;
-    insert into public.measurements (id,client_id,batch_id,operator_id,measured_at,gravity,ph,temperature_c,pressure_bar,note,process_action_id)
+    insert into public.measurements (id,client_id,batch_id,operator_id,measured_at,gravity,ph,temperature_c,pressure_bar,co2_vol,note,process_action_id)
     values ((item->>'id')::uuid,(item->>'client_id')::uuid,(item->>'batch_id')::uuid,acting_operator_id,(item->>'measured_at')::timestamptz,
       (item->>'gravity')::smallint,(item->>'ph')::numeric,(item->>'temperature_c')::numeric,nullif(item->>'pressure_bar','')::numeric,
-      nullif(item->>'note',''),resolved_action_id)
+      nullif(item->>'co2_vol','')::numeric,nullif(item->>'note',''),resolved_action_id)
     on conflict (id) do update set measured_at=excluded.measured_at,gravity=excluded.gravity,ph=excluded.ph,temperature_c=excluded.temperature_c,
-      pressure_bar=excluded.pressure_bar,note=excluded.note,process_action_id=excluded.process_action_id,operator_id=acting_operator_id
+      pressure_bar=excluded.pressure_bar,co2_vol=excluded.co2_vol,note=excluded.note,process_action_id=excluded.process_action_id,operator_id=acting_operator_id
       where public.measurements.batch_id=excluded.batch_id
         and exists(select 1 from public.batches owned where owned.id=public.measurements.batch_id and owned.brewery_id=target_brewery_id);
     get diagnostics affected_rows = row_count;

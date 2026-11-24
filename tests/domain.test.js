@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BATCH_STATUS, buildWorkTimeline, calculateHistoryStats, completedPackagingVolume, formatBatchNumber, getDailyTasks, getFermenter, getRecommendedAction, remainingInFermenter, requiredPackagingRuns, validateGravity } from "../src/domain.js";
+import { BATCH_STATUS, buildWorkTimeline, calculateHistoryStats, completedPackagingVolume, detectMeasurementWarnings, formatBatchNumber, getDailyTasks, getFermenter, getRecommendedAction, remainingInFermenter, requiredPackagingRuns, validateGravity, validatePh, validatePressure } from "../src/domain.js";
 
 describe("partijas numurs", () => {
   it("apvieno divciparu gadu, kārtas numuru un tvertni", () => {
@@ -59,5 +59,48 @@ describe("tvertnes un pildīšana", () => {
     expect(requiredPackagingRuns(8)).toBe(2);
     expect(completedPackagingVolume({ packagingRuns: [{ status: "packaged", volumeTons: 4 }, { status: "filtered", volumeTons: 4 }] })).toBe(4);
     expect(remainingInFermenter({ volumeTons: 8, packagingRuns: [{ status: "filtered", volumeTons: 4 }] })).toBe(4);
+  });
+});
+
+describe("mērījumu noviržu kontrole", () => {
+  const previous = { id: "previous", measuredAt: "2026-11-24T08:00:00Z", gravity: 1018, ph: 4.5, temperature: 17, pressure: 0.7, co2Vol: null };
+  const draft = { measuredAt: "2026-11-24T12:00:00Z", gravity: 1040, ph: 4.5, temperature: 28, pressure: 1.9, co2Vol: null, actionType: null };
+
+  it("atrod blīvuma un temperatūras kritiskas novirzes, bet 1.9 bar ir tikai brīdinājums", () => {
+    const warnings = detectMeasurementWarnings(draft, previous, [previous], { now: "2026-11-24T12:00:00Z" });
+    expect(warnings.map((item) => item.code)).toEqual(expect.arrayContaining(["gravity_increase", "temperature_jump", "pressure_high"]));
+    expect(warnings.filter((item) => item.severity === "critical").length).toBeGreaterThan(0);
+    expect(warnings.find((item) => item.code === "pressure_high")?.severity).toBe("warning");
+  });
+
+  it("atzīmē precīzu dublikātu 15 minūtēs", () => {
+    const duplicate = { ...previous, measuredAt: "2026-11-24T08:10:00Z" };
+    expect(detectMeasurementWarnings(duplicate, previous, [previous], { now: "2026-11-24T08:10:00Z" }).map((item) => item.code)).toContain("duplicate");
+  });
+
+  it("atzīmē vecu un būtiski nākotnē ievadītu laiku", () => {
+    const oldDraft = { ...draft, gravity: 1017, temperature: 17, pressure: 0.7, measuredAt: "2026-11-24T07:00:00Z" };
+    const futureDraft = { ...oldDraft, measuredAt: "2026-11-24T13:00:00Z" };
+    expect(detectMeasurementWarnings(oldDraft, previous, [], { now: "2026-11-24T12:00:00Z" }).map((item) => item.code)).toContain("timestamp_old");
+    expect(detectMeasurementWarnings(futureDraft, previous, [], { now: "2026-11-24T12:00:00Z" }).map((item) => item.code)).toContain("timestamp_future");
+  });
+
+  it("atpakaļdatētu mērījumu salīdzina ar hronoloģisko priekšteci, bet vecumu ar jaunāko", () => {
+    const predecessor = { ...previous, measuredAt: "2026-11-23T08:00:00Z", gravity: 1020, temperature: 17 };
+    const latest = { ...previous, id: "latest", measuredAt: "2026-11-25T08:00:00Z", gravity: 1012, temperature: 0 };
+    const backdated = { ...draft, measuredAt: "2026-11-24T08:00:00Z", gravity: 1018, temperature: 17, pressure: 0.7 };
+    const warnings = detectMeasurementWarnings(backdated, predecessor, [predecessor, latest], { now: "2026-11-26T08:00:00Z", latest });
+    expect(warnings.map((item) => item.code)).toContain("timestamp_old");
+    expect(warnings.map((item) => item.code)).not.toContain("temperature_jump");
+  });
+
+  it("trūkstošu CO₂ un spiedienu nepārvērš par nulles brīdinājumu", () => {
+    const normal = { measuredAt: "2026-11-24T12:00:00Z", gravity: 1017, ph: 4.4, temperature: 17, pressure: null, co2Vol: null };
+    expect(detectMeasurementWarnings(normal, previous, [previous], { now: "2026-11-24T12:00:00Z" })).toEqual([]);
+  });
+
+  it("pH 47 un spiedienu virs 2 bar noraida ar cieto validāciju", () => {
+    expect(() => validatePh(47)).toThrow();
+    expect(() => validatePressure(2.1)).toThrow();
   });
 });

@@ -90,10 +90,67 @@ export function validateTemperature(value, required = true) {
 export function validatePressure(value, required = false) {
   if ((value === "" || value == null) && !required) return null;
   const number = Number(value);
-  if (!Number.isFinite(number) || number < 0 || number > 5) {
-    throw new Error("Spiedienam jābūt no 0 līdz 5 bar.");
+  if (!Number.isFinite(number) || number < 0 || number > 2) {
+    throw new Error("Spiedienam jābūt no 0 līdz 2 bar. Virs 2 bar mērījumu saglabāt nedrīkst.");
   }
   return number;
+}
+
+export function validateCo2(value, required = false) {
+  if ((value === "" || value == null) && !required) return null;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || number > 5) {
+    throw new Error("CO₂ jābūt no 0 līdz 5 vol.");
+  }
+  return number;
+}
+
+const warning = (code, severity, message, delta = null) => ({ code, severity, message, delta });
+
+/** Pure warning detector. Missing optional values are deliberately ignored. */
+export function detectMeasurementWarnings(draft, previous = null, recent = [], profile = {}) {
+  const warnings = [];
+  const gravityRise = previous ? Number(draft.gravity) - Number(previous.gravity) : 0;
+  if (previous && gravityRise > (profile.gravityRisePoints ?? 3)) {
+    warnings.push(warning("gravity_increase", gravityRise >= 10 ? "critical" : "warning",
+      `Blīvums pieaudzis no ${previous.gravity} uz ${draft.gravity} (+${gravityRise} punkti).`, gravityRise));
+  }
+
+  if (Number(draft.ph) < (profile.phLow ?? 2.5) || Number(draft.ph) > (profile.phHigh ?? 6.5)) {
+    warnings.push(warning("ph_unusual", "warning", `pH ${draft.ph} ir ārpus ierastā alus diapazona.`));
+  }
+
+  if (previous) {
+    const temperatureDelta = Math.abs(Number(draft.temperature) - Number(previous.temperature));
+    if (temperatureDelta >= (profile.temperatureWarningDelta ?? 5)) {
+      const coolingExpected = draft.actionType === ACTION_TYPES.COOL && Number(draft.temperature) < Number(previous.temperature);
+      warnings.push(warning("temperature_jump", temperatureDelta >= 10 && !coolingExpected ? "critical" : "warning",
+        `Temperatūra mainījusies no ${previous.temperature} uz ${draft.temperature} °C (${temperatureDelta.toFixed(1)} °C).${coolingExpected ? " Ir atzīmēta dzesēšana." : ""}`, temperatureDelta));
+    }
+  }
+
+  if (draft.pressure != null && Number(draft.pressure) > (profile.pressureWarningBar ?? 1.8)) {
+    warnings.push(warning("pressure_high", "warning", `Spiediens ${draft.pressure} bar ir tuvu 2 bar darbības robežai.`));
+  }
+
+  const measuredTime = new Date(draft.measuredAt).getTime();
+  const now = profile.now ? new Date(profile.now).getTime() : Date.now();
+  if (measuredTime > now + (profile.futureToleranceMinutes ?? 15) * 60_000) {
+    warnings.push(warning("timestamp_future", "critical", "Mērījuma laiks ir vairāk nekā 15 minūtes nākotnē."));
+  }
+  const latest = profile.latest || previous;
+  if (latest && measuredTime < new Date(latest.measuredAt).getTime()) {
+    warnings.push(warning("timestamp_old", "warning", `Mērījuma laiks ir agrāks par pēdējo ierakstu (${new Date(latest.measuredAt).toLocaleString("lv-LV")}).`));
+  }
+
+  const duplicate = recent.some((item) => Math.abs(new Date(item.measuredAt).getTime() - measuredTime) <= 15 * 60_000
+    && Number(item.gravity) === Number(draft.gravity)
+    && Number(item.ph) === Number(draft.ph)
+    && Number(item.temperature) === Number(draft.temperature)
+    && (item.pressure == null ? null : Number(item.pressure)) === (draft.pressure == null ? null : Number(draft.pressure))
+    && (item.co2Vol == null ? null : Number(item.co2Vol)) === (draft.co2Vol == null ? null : Number(draft.co2Vol)));
+  if (duplicate) warnings.push(warning("duplicate", "critical", "Tāds pats mērījums jau saglabāts 15 minūšu intervālā."));
+  return warnings;
 }
 
 export function daysBetween(startDate, endDate) {

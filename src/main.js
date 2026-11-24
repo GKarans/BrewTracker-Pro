@@ -1,6 +1,6 @@
 import "./styles.css";
 import { icons, createElement } from "lucide";
-import { ACTION_LABELS, ACTION_TYPES, BATCH_STATUS, FERMENTERS, addDays, buildWorkTimeline, calculateHistoryStats, completedPackagingVolume, formatBatchNumber, getDailyTasks, getFermenter, getRecommendedAction, remainingInFermenter, requiredPackagingRuns, validateGravity, validatePh, validatePressure, validateTemperature } from "./domain.js";
+import { ACTION_LABELS, ACTION_TYPES, BATCH_STATUS, FERMENTERS, addDays, buildWorkTimeline, calculateHistoryStats, completedPackagingVolume, detectMeasurementWarnings, formatBatchNumber, getDailyTasks, getFermenter, getRecommendedAction, remainingInFermenter, requiredPackagingRuns, validateCo2, validateGravity, validatePh, validatePressure, validateTemperature } from "./domain.js";
 import { loadState, saveState } from "./store.js";
 import { isSupabaseConfigured, supabase } from "./supabase.js";
 import { fetchRemoteState, syncEvent } from "./sync.js";
@@ -356,10 +356,12 @@ async function saveAndSync(event) {
     return true;
   } catch (error) {
     console.error("Change synchronization failed", error);
-    if (/VERSION_CONFLICT/i.test(error.message || "")) {
+    if (/VERSION_CONFLICT|ANOMALY_BASELINE_CHANGED/i.test(error.message || "")) {
       state.pendingSync = state.pendingSync.filter((item) => item.id !== queued.id);
       state = await saveState(state);
-      alert("Šo ierakstu citā ierīcē jau mainīja. Tiks ielādēta jaunākā servera versija; pārbaudi datus un atkārto darbību.");
+      alert(/ANOMALY_BASELINE_CHANGED/i.test(error.message || "")
+        ? "Kopš ievades ir saglabāts jaunāks mērījums. Ielādēsim servera datus — pārbaudi novirzi un ievadi mērījumu vēlreiz."
+        : "Šo ierakstu citā ierīcē jau mainīja. Tiks ielādēta jaunākā servera versija; pārbaudi datus un atkārto darbību.");
       await reloadRemotePreservingQueue(operatorSessionToken());
       render();
       return false;
@@ -637,7 +639,7 @@ function batchDetail() {
   const beer = { ...rawBeer, name: escapeHtml(rawBeer?.name || "Nezināms alus") };
   const recommendation = getRecommendedAction(batch);
   const stats = calculateHistoryStats(state.batches, batch.beerTypeId);
-  shell(`<main class="narrow"><button class="text-button" data-route="dashboard">${icon("ArrowLeft")} Visas tvertnes</button><section class="batch-hero"><div><span class="batch-no">#${escapeHtml(batch.batchNumber)} · Tvertne ${escapeHtml(batch.fermenterNumber)}</span><h1>${escapeHtml(beer.name)} <small>${remainingInFermenter(batch)} t tvertnē no ${batch.volumeTons} t</small></h1><p>Sākts ${formatDate(batch.brewDate)}</p></div><div class="hero-actions"><span class="status">${batch.status === BATCH_STATUS.FINISHED ? "Pabeigts" : "Aktīvs"}</span><button class="danger-button" data-delete-batch="${batch.id}">${icon("Trash2", 17)} Dzēst partiju</button></div></section><section class="action-banner ${recommendation.tone}"><div>${icon("Sparkles", 24)}<span><small>Ieteicamā darbība</small><strong>${recommendation.label}</strong></span></div></section>${predictionPanel(batch, stats)}<section class="detail-grid"><article class="panel"><div class="panel-title"><h2>Jauns mērījums</h2><span>Var saglabāt bez interneta</span></div><form id="measurement-form" class="measurement-form"><div class="field full"><label>Mērījuma datums un laiks</label><input name="measuredAt" type="datetime-local" value="${localDateTimeValue()}" required></div><div class="field"><label>Blīvums</label><input name="gravity" inputmode="numeric" placeholder="1054" required></div><div class="field"><label>pH</label><input name="ph" type="number" min="0" max="14" step="0.01" placeholder="4.20" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" min="-5" max="50" step="0.1" placeholder="19.5" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" min="0" max="5" step="0.01" placeholder="0.80"></div><div class="field full"><label>Saistītā fermentācijas darbība</label><select name="actionType"><option value="">Nav — tikai mērījums</option><option value="spund">Aizgriezts vārsts</option>${batch.hasDryHop ? `<option value="dry_hop">Pievienots Dry Hop</option>` : ""}<option value="cool">Iestatīta dzesēšana uz 0 °C</option></select></div><div class="field full"><label>Piezīme</label><input name="note" placeholder="Neobligāta piezīme"></div><div class="form-error full" id="measurement-error"></div><button class="primary full">${icon("Save")} Saglabāt mērījumu</button></form></article><article class="panel"><div class="panel-title"><h2>Fermentācijas darbības</h2></div><div class="action-list">${[ACTION_TYPES.SPUND, ...(batch.hasDryHop ? [ACTION_TYPES.DRY_HOP] : []), ACTION_TYPES.COOL].map((type) => actionButton(batch, type)).join("")}</div></article></section>${packagingPanel(batch)}<section class="panel"><div class="panel-title"><h2>Mērījumu vēsture</h2><span>${batch.measurements.length} ieraksti</span></div>${measurementTable(batch)}</section></main>`, beer.name);
+  shell(`<main class="narrow"><button class="text-button" data-route="dashboard">${icon("ArrowLeft")} Visas tvertnes</button><section class="batch-hero"><div><span class="batch-no">#${escapeHtml(batch.batchNumber)} · Tvertne ${escapeHtml(batch.fermenterNumber)}</span><h1>${escapeHtml(beer.name)} <small>${remainingInFermenter(batch)} t tvertnē no ${batch.volumeTons} t</small></h1><p>Sākts ${formatDate(batch.brewDate)}</p></div><div class="hero-actions"><span class="status">${batch.status === BATCH_STATUS.FINISHED ? "Pabeigts" : "Aktīvs"}</span><button class="danger-button" data-delete-batch="${batch.id}">${icon("Trash2", 17)} Dzēst partiju</button></div></section><section class="action-banner ${recommendation.tone}"><div>${icon("Sparkles", 24)}<span><small>Ieteicamā darbība</small><strong>${recommendation.label}</strong></span></div></section>${predictionPanel(batch, stats)}<section class="detail-grid"><article class="panel"><div class="panel-title"><h2>Jauns mērījums</h2><span>Var saglabāt bez interneta</span></div><form id="measurement-form" class="measurement-form"><div class="field full"><label>Mērījuma datums un laiks</label><input name="measuredAt" type="datetime-local" value="${localDateTimeValue()}" required></div><div class="field"><label>Blīvums</label><input name="gravity" inputmode="numeric" placeholder="1054" required></div><div class="field"><label>pH</label><input name="ph" type="number" min="0" step="0.01" placeholder="4.20" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" min="-5" max="50" step="0.1" placeholder="19.5" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" min="0" max="2" step="0.01" placeholder="0.80"></div><div class="field"><label>CO₂, vol <small>(neobligāts)</small></label><input name="co2Vol" type="number" min="0" max="5" step="0.1" placeholder="—"></div><div class="field full"><label>Saistītā fermentācijas darbība</label><select name="actionType"><option value="">Nav — tikai mērījums</option><option value="spund">Aizgriezts vārsts</option>${batch.hasDryHop ? `<option value="dry_hop">Pievienots Dry Hop</option>` : ""}<option value="cool">Iestatīta dzesēšana uz 0 °C</option></select></div><div class="field full"><label>Piezīme</label><input name="note" placeholder="Neobligāta piezīme"></div><div class="form-error full" id="measurement-error"></div><button class="primary full">${icon("Save")} Saglabāt mērījumu</button></form></article><article class="panel"><div class="panel-title"><h2>Fermentācijas darbības</h2></div><div class="action-list">${[ACTION_TYPES.SPUND, ...(batch.hasDryHop ? [ACTION_TYPES.DRY_HOP] : []), ACTION_TYPES.COOL].map((type) => actionButton(batch, type)).join("")}</div></article></section>${packagingPanel(batch)}<section class="panel"><div class="panel-title"><h2>Mērījumu vēsture</h2><span>${batch.measurements.length} ieraksti</span></div>${measurementTable(batch)}</section></main>`, beer.name);
 }
 
 function deleteBatchDialog(batchId) {
@@ -685,26 +687,78 @@ function actionButton(batch, type) {
 
 function measurementTable(batch) {
   if (!batch.measurements.length) return `<div class="empty-state">${icon("Gauge", 34)}<p>Vēl nav neviena mērījuma.</p></div>`;
-  return `<div class="table-wrap"><table><thead><tr><th>Laiks</th><th>Darbība</th><th>Blīvums</th><th>pH</th><th>°C</th><th>bar</th><th>Operators</th></tr></thead><tbody>${[...batch.measurements].reverse().map((item) => `<tr><td>${new Date(item.measuredAt).toLocaleString("lv-LV", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</td><td>${item.actionType ? `<span class="action-tag">${ACTION_LABELS[item.actionType]}</span>` : "—"}</td><td><strong>${item.gravity}</strong></td><td>${item.ph}</td><td>${item.temperature}</td><td>${item.pressure ?? "—"}</td><td>${escapeHtml(state.operators.find((op) => op.id === item.operatorId)?.name || "—")}</td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Laiks</th><th>Darbība</th><th>Blīvums</th><th>pH</th><th>°C</th><th>bar</th><th>CO₂</th><th>Kvalitāte</th><th>Operators</th></tr></thead><tbody>${[...batch.measurements].reverse().map((item) => `<tr><td>${new Date(item.measuredAt).toLocaleString("lv-LV", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</td><td>${item.actionType ? `<span class="action-tag">${ACTION_LABELS[item.actionType]}</span>` : "—"}</td><td><strong>${item.gravity}</strong></td><td>${item.ph}</td><td>${item.temperature}</td><td>${item.pressure ?? "—"}</td><td>${item.co2Vol ?? "—"}</td><td>${anomalyDetails(item)}</td><td>${escapeHtml(state.operators.find((op) => op.id === item.operatorId)?.name || "—")}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+const ANOMALY_LABELS = { gravity_increase: "Blīvums pieaudzis", ph_unusual: "Neparasts pH", temperature_jump: "Strauja temperatūras maiņa", pressure_high: "Spiediens tuvu 2 bar", duplicate: "Iespējams dublikāts", timestamp_old: "Atpakaļdatēts mērījums", timestamp_future: "Laiks ir nākotnē" };
+
+function anomalyDetails(item) {
+  if (!item.warningCodes?.length) return "—";
+  const details = item.warningCodes.map((code) => `<li>${escapeHtml(ANOMALY_LABELS[code] || code)}</li>`).join("");
+  const reason = item.anomalyReason ? `<p><strong>Pamatojums:</strong> ${escapeHtml(item.anomalyReason)}</p>` : "";
+  return `<details class="warning-details"><summary class="warning-badge" aria-label="Atvērt ${item.warningCodes.length} mērījuma brīdinājumus">${icon("TriangleAlert", 14)} ${item.warningCodes.length}</summary><ul>${details}</ul>${reason}</details>`;
+}
+
+function measurementContext(batch, measuredAt) {
+  const sorted = [...batch.measurements].sort((a, b) => new Date(a.measuredAt) - new Date(b.measuredAt));
+  return {
+    previous: sorted.filter((item) => new Date(item.measuredAt) <= new Date(measuredAt)).at(-1) || null,
+    latest: sorted.at(-1) || null,
+  };
+}
+
+function validatedMeasurementDraft(data, measuredAt, actionType = null) {
+  if (Number(data.ph) > 14 && Number(data.ph) <= 140) throw new Error(`pH ${data.ph} nav derīgs. Vai domāji ${(Number(data.ph) / 10).toFixed(1)}? Izlabo vērtību pirms saglabāšanas.`);
+  return {
+    measuredAt,
+    gravity: validateGravity(data.gravity),
+    ph: validatePh(data.ph),
+    temperature: validateTemperature(data.temperature),
+    pressure: validatePressure(data.pressure),
+    co2Vol: validateCo2(data.co2Vol),
+    actionType,
+  };
+}
+
+function confirmMeasurementWarnings(warnings, previous) {
+  if (!warnings.length) return Promise.resolve({ confirmed: false, reason: null, confirmedAt: null });
+  return new Promise((resolve) => {
+    const critical = warnings.some((item) => item.severity === "critical");
+    const dialog = document.createElement("dialog");
+    dialog.innerHTML = `<form method="dialog" class="dialog-card anomaly-dialog"><button class="dialog-close" value="fix" formnovalidate>${icon("X")}</button><p class="eyebrow danger-text">Pārbaudi mērījumu</p><h2>Vērtības atšķiras no iepriekšējā ieraksta</h2>${previous ? `<p>Iepriekšējais mērījums: ${previous.gravity} · pH ${previous.ph} · ${previous.temperature} °C · ${previous.pressure ?? "—"} bar</p>` : ""}<ul class="anomaly-list">${warnings.map((item) => `<li class="${item.severity}">${icon(item.severity === "critical" ? "TriangleAlert" : "Info", 19)}<span>${escapeHtml(item.message)}</span></li>`).join("")}</ul>${critical ? `<div class="field"><label>Iemesls, kāpēc tomēr saglabāt</label><textarea name="reason" minlength="3" required placeholder="Piemēram, atkārtoti pārbaudīts ar otru mērierīci"></textarea></div>` : `<div class="field"><label>Piezīme par novirzi (neobligāta)</label><textarea name="reason" placeholder="Kas izskaidro atšķirību?"></textarea></div>`}<div class="dialog-actions"><button class="secondary" value="fix" formnovalidate>Labot</button><button class="primary" value="save">Tomēr saglabāt</button></div></form>`;
+    document.body.append(dialog); dialog.showModal();
+    dialog.addEventListener("close", () => {
+      const reason = dialog.querySelector('[name="reason"]').value.trim();
+      const save = dialog.returnValue === "save" && (!critical || reason.length >= 3);
+      if (dialog.returnValue === "save" && critical && !save) alert("Kritiskai novirzei ieraksti īsu iemeslu.");
+      dialog.remove();
+      resolve(save ? { confirmed: true, reason: reason || null, confirmedAt: new Date().toISOString() } : null);
+    });
+  });
 }
 
 async function submitMeasurement(form) {
   try {
     const data = Object.fromEntries(new FormData(form));
-    if (!await ensureAcceptedWork(selectedBatchId, data.actionType || "measure")) return;
     const batch = state.batches.find((item) => item.id === selectedBatchId);
     const measuredAt = new Date(data.measuredAt).toISOString();
+    const { previous, latest } = measurementContext(batch, measuredAt);
+    const draft = validatedMeasurementDraft(data, measuredAt, data.actionType || null);
+    const warnings = detectMeasurementWarnings(draft, previous, batch.measurements, { latest });
+    const override = await confirmMeasurementWarnings(warnings, previous);
+    if (warnings.length && !override) return;
+    if (!await ensureAcceptedWork(selectedBatchId, data.actionType || "measure")) return;
     let processActionId = null;
     if (data.actionType) {
       const previousAction = batch.actions.find((item) => item.type === data.actionType);
-      const action = { id: previousAction?.id || crypto.randomUUID(), version: previousAction?.version || 0, type: data.actionType, performedAt: measuredAt, gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), note: data.note.trim(), operatorId: currentOperator().id };
+      const action = { id: previousAction?.id || crypto.randomUUID(), version: previousAction?.version || 0, type: data.actionType, performedAt: measuredAt, gravity: draft.gravity, ph: draft.ph, temperature: draft.temperature, pressure: draft.pressure, note: data.note.trim(), operatorId: currentOperator().id };
       batch.actions = batch.actions.filter((item) => item.type !== data.actionType);
       batch.actions.push(action);
       if (data.actionType === ACTION_TYPES.DRY_HOP) batch.status = BATCH_STATUS.DRY_HOP;
       if (data.actionType === ACTION_TYPES.COOL) batch.status = BATCH_STATUS.COOLING;
       processActionId = action.id;
     }
-    const measurement = { id: crypto.randomUUID(), version: 0, measuredAt, gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), note: data.note.trim(), operatorId: currentOperator().id, processActionId, actionType: data.actionType || null };
+    const measurement = { id: crypto.randomUUID(), version: 0, ...draft, note: data.note.trim(), operatorId: currentOperator().id, processActionId, warningCodes: warnings.map((item) => item.code), warningDetails: warnings, anomalyConfirmedAt: override?.confirmedAt || null, anomalyReason: override?.reason || null, anomalyBaselineId: previous?.id || null };
     batch.measurements.push(measurement);
     const workItem=acceptedWorkItem(batch.id,data.actionType || "measure");
     if (data.actionType) {
@@ -718,7 +772,7 @@ function actionDialog(type) {
   const batch = state.batches.find((item) => item.id === selectedBatchId);
   const latest = batch.measurements.at(-1);
   const dialog = document.createElement("dialog");
-  dialog.innerHTML = `<form method="dialog" id="action-form" class="dialog-card"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow">Procesa darbība</p><h2>${ACTION_LABELS[type]}</h2><p>Fiksē mērījumus darbības izpildes brīdī.</p><div class="measurement-form"><div class="field full"><label>Darbības datums un laiks</label><input name="performedAt" type="datetime-local" value="${localDateTimeValue()}" required></div><div class="field"><label>Blīvums</label><input name="gravity" value="${latest?.gravity ?? ""}" required></div><div class="field"><label>pH</label><input name="ph" type="number" step="0.01" value="${latest?.ph ?? ""}" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" step="0.1" value="${latest?.temperature ?? ""}" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" step="0.01" value="${latest?.pressure ?? ""}"></div><div class="form-error full" id="action-error"></div><button class="primary full" value="default">Apstiprināt darbību</button></div></form>`;
+  dialog.innerHTML = `<form method="dialog" id="action-form" class="dialog-card"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow">Procesa darbība</p><h2>${ACTION_LABELS[type]}</h2><p>Fiksē mērījumus darbības izpildes brīdī.</p><div class="measurement-form"><div class="field full"><label>Darbības datums un laiks</label><input name="performedAt" type="datetime-local" value="${localDateTimeValue()}" required></div><div class="field"><label>Blīvums</label><input name="gravity" value="${latest?.gravity ?? ""}" required></div><div class="field"><label>pH</label><input name="ph" type="number" step="0.01" value="${latest?.ph ?? ""}" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" step="0.1" value="${latest?.temperature ?? ""}" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" step="0.01" value="${latest?.pressure ?? ""}"></div><div class="field"><label>CO₂, vol <small>(neobligāts)</small></label><input name="co2Vol" type="number" min="0" max="5" step="0.1" value="${latest?.co2Vol ?? ""}"></div><div class="form-error full" id="action-error"></div><button class="primary full" value="default">Apstiprināt darbību</button></div></form>`;
   document.body.append(dialog); dialog.showModal();
   dialog.addEventListener("close", async () => { if (dialog.returnValue === "default") await completeAction(type, dialog.querySelector("form")); dialog.remove(); });
 }
@@ -787,13 +841,19 @@ async function completeAction(type, form) {
   try {
     const data = Object.fromEntries(new FormData(form));
     const batch = state.batches.find((item) => item.id === selectedBatchId);
+    const measuredAt = new Date(data.performedAt).toISOString();
+    const { previous, latest } = measurementContext(batch, measuredAt);
+    const draft = validatedMeasurementDraft(data, measuredAt, type);
+    const warnings = detectMeasurementWarnings(draft, previous, batch.measurements, { latest });
+    const override = await confirmMeasurementWarnings(warnings, previous);
+    if (warnings.length && !override) return;
     const previousAction = batch.actions.find((item) => item.type === type);
-    const action = { id: previousAction?.id || crypto.randomUUID(), version: previousAction?.version || 0, type, performedAt: new Date(data.performedAt).toISOString(), gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), operatorId: currentOperator().id };
+    const action = { id: previousAction?.id || crypto.randomUUID(), version: previousAction?.version || 0, type, performedAt: measuredAt, gravity: draft.gravity, ph: draft.ph, temperature: draft.temperature, pressure: draft.pressure, operatorId: currentOperator().id };
     batch.actions = batch.actions.filter((item) => item.type !== type); batch.actions.push(action);
     if (type === ACTION_TYPES.DRY_HOP) batch.status = BATCH_STATUS.DRY_HOP;
     if (type === ACTION_TYPES.COOL) batch.status = BATCH_STATUS.COOLING;
     if (type === ACTION_TYPES.FINISH) batch.status = BATCH_STATUS.FINISHED;
-    const actionMeasurement = { id: crypto.randomUUID(), version: 0, measuredAt: action.performedAt, gravity: action.gravity, ph: action.ph, temperature: action.temperature, pressure: action.pressure, note: ACTION_LABELS[type], operatorId: action.operatorId, processActionId: action.id, actionType: type };
+    const actionMeasurement = { id: crypto.randomUUID(), version: 0, ...draft, note: ACTION_LABELS[type], operatorId: action.operatorId, processActionId: action.id, warningCodes: warnings.map((item) => item.code), warningDetails: warnings, anomalyConfirmedAt: override?.confirmedAt || null, anomalyReason: override?.reason || null, anomalyBaselineId: previous?.id || null };
     batch.measurements.push(actionMeasurement);
     const workItem=acceptedWorkItem(batch.id,type);
     if (!await saveAndSync({ entity: "processBundle", operation: "apply", batchId: batch.id, actionId: action.id, measurementId: actionMeasurement.id, workItemId:workItem.id, workItemVersion:workItem.version })) return;

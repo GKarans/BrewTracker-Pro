@@ -194,10 +194,10 @@ Implementation status (2026-11-24): operator sessions and session-attributed syn
 
 ### Verification checklist
 
-- [ ] `1018 → 1040`, `pH 47`, +10 °C, excessive pressure, duplicate, old timestamp, and future timestamp each follow the correct path.
-- [ ] Canceling the warning creates neither measurement nor process action.
-- [ ] Confirmed override syncs offline/online exactly once and is auditable.
-- [ ] Missing optional values are not treated as zero.
+- [x] `1018 → 1040`, `pH 47`, +10 °C, excessive pressure, duplicate, old timestamp, and future timestamp each follow the correct path.
+- [x] Canceling the warning creates neither measurement nor process action.
+- [x] Confirmed override syncs offline/online exactly once and is auditable.
+- [x] Missing optional values are not treated as zero.
 
 ### Anti-pattern guards
 

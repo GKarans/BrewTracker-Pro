@@ -52,7 +52,7 @@ export async function fetchRemoteState(localState, breweryId, sessionToken = nul
       createdAt: batch.created_at,
       finishedAt: batch.finished_at,
       version: batch.version || 1,
-      measurements: activeMeasurements.filter((item) => item.batch_id === batch.id).map((item) => { const linkedAction = activeActions.find((action) => action.id === item.process_action_id); return { id: item.id, version: item.version || 1, measuredAt: item.measured_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), note: item.note || "", operatorId: item.operator_id, processActionId: item.process_action_id, actionType: linkedAction?.action_type || null }; }),
+      measurements: activeMeasurements.filter((item) => item.batch_id === batch.id).map((item) => { const linkedAction = activeActions.find((action) => action.id === item.process_action_id); return { id: item.id, version: item.version || 1, measuredAt: item.measured_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), co2Vol: item.co2_vol == null ? null : Number(item.co2_vol), note: item.note || "", operatorId: item.operator_id, processActionId: item.process_action_id, actionType: linkedAction?.action_type || null, warningCodes: item.warning_codes || [], warningDetails: item.warning_details || [], anomalyConfirmedAt: item.anomaly_confirmed_at, anomalyReason: item.anomaly_reason, anomalyBaselineId: item.anomaly_baseline_measurement_id }; }),
       actions: activeActions.filter((item) => item.batch_id === batch.id).map((item) => ({ id: item.id, version: item.version || 1, type: item.action_type, performedAt: item.performed_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), note: item.note || "", operatorId: item.operator_id })),
       packagingRuns: activePackagingRuns.filter((item) => item.batch_id === batch.id).map((item) => ({ id: item.id, version: item.version || 1, clientId: item.client_id, runNumber: item.run_number, volumeTons: Number(item.volume_tons), centrifugeLiters: item.centrifuge_liters == null ? null : Number(item.centrifuge_liters), status: item.status, filteredAt: item.filtered_at, packagedAt: item.packaged_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), co2Vol: item.co2_vol == null ? null : Number(item.co2_vol), operatorId: item.operator_id })),
     })),
@@ -91,7 +91,7 @@ export async function syncEvent(state, event, breweryId, sessionToken) {
     };
     if (event.entity === "processBundle") {
       if (!measurement) throw new Error("Darbības mērījums nav pieejams sinhronizācijai.");
-      payload.measurement = { expected_version: event.expectedVersions?.measurement ?? 0, item: { id: measurement.id, client_id: measurement.id, batch_id: batch.id, measured_at: measurement.measuredAt, gravity: measurement.gravity, ph: measurement.ph, temperature_c: measurement.temperature, pressure_bar: measurement.pressure, note: measurement.note || null, process_action_id: action.id, action_type: action.type } };
+      payload.measurement = { expected_version: event.expectedVersions?.measurement ?? 0, item: measurementPayload(measurement, batch.id, action.id, action.type) };
     } else {
       if (!packagingRun) throw new Error("Pildīšanas cikls nav pieejams sinhronizācijai.");
       payload.packaging = { expected_version: event.expectedVersions?.packagingRun ?? 0, item: { id: packagingRun.id, client_id: packagingRun.clientId || packagingRun.id, batch_id: batch.id, run_number: packagingRun.runNumber, volume_tons: packagingRun.volumeTons, centrifuge_liters: packagingRun.centrifugeLiters, status: packagingRun.status, filtered_at: packagingRun.filteredAt, packaged_at: packagingRun.packagedAt, gravity: packagingRun.gravity, ph: packagingRun.ph, temperature_c: packagingRun.temperature, pressure_bar: packagingRun.pressure, co2_vol: packagingRun.co2Vol } };
@@ -113,7 +113,7 @@ export async function syncEvent(state, event, breweryId, sessionToken) {
     if (!batch) return true;
     if (event.entity === "measurement") {
       const item = batch.measurements.find((child) => child.id === event.entityId);
-      payload = { item: { id: item.id, client_id: item.id, batch_id: batch.id, measured_at: item.measuredAt, gravity: item.gravity, ph: item.ph, temperature_c: item.temperature, pressure_bar: item.pressure, note: item.note || null, process_action_id: item.processActionId || null, action_type: item.actionType || null } };
+      payload = { item: measurementPayload(item, batch.id, item.processActionId || null, item.actionType || null) };
     } else if (event.entity === "action") {
       const item = batch.actions.find((child) => child.id === event.entityId);
       payload = { item: { id: item.id, client_id: item.id, batch_id: batch.id, action_type: item.type, performed_at: item.performedAt, gravity: item.gravity, ph: item.ph, temperature_c: item.temperature, pressure_bar: item.pressure, note: item.note || null } };
@@ -124,7 +124,7 @@ export async function syncEvent(state, event, breweryId, sessionToken) {
       throw new Error("Neatbalstīts sinhronizācijas ieraksts.");
     }
   }
-  const rpcName = event.workItemId ? "sync_operator_work_event" : "sync_operator_event_v2";
+  const rpcName = event.workItemId ? "sync_operator_work_event_v3" : "sync_operator_event_v3";
   const rpcArgs = {
     session_token: sessionToken,
     expected_operator_id: event.operatorId,
@@ -140,4 +140,15 @@ export async function syncEvent(state, event, breweryId, sessionToken) {
   }
   throwOnError(await supabase.rpc(rpcName, rpcArgs));
   return true;
+}
+
+function measurementPayload(item, batchId, processActionId, actionType) {
+  return {
+    id: item.id, client_id: item.id, batch_id: batchId, measured_at: item.measuredAt,
+    gravity: item.gravity, ph: item.ph, temperature_c: item.temperature, pressure_bar: item.pressure,
+    co2_vol: item.co2Vol, note: item.note || null, process_action_id: processActionId,
+    action_type: actionType, warning_codes: item.warningCodes || [], warning_details: item.warningDetails || [],
+    anomaly_confirmed_at: item.anomalyConfirmedAt, anomaly_reason: item.anomalyReason,
+    anomaly_baseline_measurement_id: item.anomalyBaselineId,
+  };
 }
