@@ -6,7 +6,7 @@ function throwOnError(result) {
 }
 
 export async function fetchRemoteState(localState, breweryId, sessionToken = null) {
-  const [fermenters, beerTypes, batches, measurements, actions, packagingRuns, workItems, workItemEvents, cleaningCycles, cleaningEvents, volumeEvents] = await Promise.all([
+  const [fermenters, beerTypes, batches, measurements, actions, packagingRuns, workItems, workItemEvents, cleaningCycles, cleaningEvents, volumeEvents, carbonationAdvisories] = await Promise.all([
     supabase.from("fermenters").select("*").order("number"),
     supabase.from("beer_types").select("*").order("name"),
     supabase.from("batches").select("*").order("brew_date"),
@@ -18,8 +18,9 @@ export async function fetchRemoteState(localState, breweryId, sessionToken = nul
     supabase.from("vessel_cleaning_cycles").select("*").order("completed_at", { ascending: false }),
     supabase.from("vessel_cleaning_events").select("*").order("created_at", { ascending: false }),
     supabase.from("volume_events").select("*").order("recorded_at", { ascending: false }),
+    supabase.from("batch_carbonation_advisories").select("*"),
   ]);
-  [fermenters, beerTypes, batches, measurements, actions, packagingRuns, workItems, workItemEvents, cleaningCycles, cleaningEvents, volumeEvents].forEach(throwOnError);
+  [fermenters, beerTypes, batches, measurements, actions, packagingRuns, workItems, workItemEvents, cleaningCycles, cleaningEvents, volumeEvents, carbonationAdvisories].forEach(throwOnError);
   let deletedBatches = localState.deletedBatches || [];
   if (sessionToken) {
     const deleted = await supabase.rpc("list_deleted_batches", { session_token: sessionToken });
@@ -64,7 +65,7 @@ export async function fetchRemoteState(localState, breweryId, sessionToken = nul
       finishedAt: batch.finished_at,
       fermenterReleasedAt: batch.fermenter_released_at,
       version: batch.version || 1,
-      measurements: activeMeasurements.filter((item) => item.batch_id === batch.id).map((item) => { const linkedAction = activeActions.find((action) => action.id === item.process_action_id); return { id: item.id, version: item.version || 1, measuredAt: item.measured_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), co2Vol: item.co2_vol == null ? null : Number(item.co2_vol), note: item.note || "", operatorId: item.operator_id, processActionId: item.process_action_id, actionType: linkedAction?.action_type || null, warningCodes: item.warning_codes || [], warningDetails: item.warning_details || [], anomalyConfirmedAt: item.anomaly_confirmed_at, anomalyReason: item.anomaly_reason, anomalyBaselineId: item.anomaly_baseline_measurement_id }; }),
+      measurements: activeMeasurements.filter((item) => item.batch_id === batch.id).map((item) => { const linkedAction = activeActions.find((action) => action.id === item.process_action_id); return { id: item.id, version: item.version || 1, measuredAt: item.measured_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), co2Vol: item.co2_vol == null ? null : Number(item.co2_vol), co2MeasurementMethod: item.co2_measurement_method || null, note: item.note || "", operatorId: item.operator_id, processActionId: item.process_action_id, actionType: linkedAction?.action_type || null, warningCodes: item.warning_codes || [], warningDetails: item.warning_details || [], anomalyConfirmedAt: item.anomaly_confirmed_at, anomalyReason: item.anomaly_reason, anomalyBaselineId: item.anomaly_baseline_measurement_id }; }),
       actions: activeActions.filter((item) => item.batch_id === batch.id).map((item) => ({ id: item.id, version: item.version || 1, type: item.action_type, performedAt: item.performed_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), note: item.note || "", operatorId: item.operator_id })),
       packagingRuns: activePackagingRuns.filter((item) => item.batch_id === batch.id).map((item) => ({ id: item.id, version: item.version || 1, clientId: item.client_id, runNumber: item.run_number, volumeTons: Number(item.volume_tons), sourceDrawnLiters: item.source_drawn_liters == null ? null : Number(item.source_drawn_liters), centrifugeLiters: item.centrifuge_liters == null ? null : Number(item.centrifuge_liters), briteReceivedLiters: item.brite_received_liters == null ? null : Number(item.brite_received_liters), packagedLiters: item.packaged_liters == null ? null : Number(item.packaged_liters), volumeOverrideReason: item.volume_override_reason || null, status: item.status, filteredAt: item.filtered_at, packagedAt: item.packaged_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), co2Vol: item.co2_vol == null ? null : Number(item.co2_vol), operatorId: item.operator_id })),
     })),
@@ -74,6 +75,18 @@ export async function fetchRemoteState(localState, breweryId, sessionToken = nul
     cleaningCycles: cleaningCycles.data.map((item) => ({ id:item.id, fermenterId:item.fermenter_id, relatedBatchId:item.related_batch_id, startedAt:item.started_at, startedBy:item.started_by, completedAt:item.completed_at, completedBy:item.completed_by, usedAlkali:item.used_alkali, usedAcid:item.used_acid, usedDisinfectant:item.used_disinfectant, program:item.program, note:item.note })),
     cleaningEvents: cleaningEvents.data.map((item) => ({ id:item.id, fermenterId:item.fermenter_id, cleaningCycleId:item.cleaning_cycle_id, relatedBatchId:item.related_batch_id, operatorId:item.operator_id, type:item.event_type, details:item.details, createdAt:item.created_at })),
     volumeEvents: volumeEvents.data.map((item) => ({ id:item.id,batchId:item.batch_id,packagingRunId:item.packaging_run_id,stage:item.stage,liters:Number(item.liters),measured:item.is_measured,recordedAt:item.recorded_at,note:item.note,operatorId:item.operator_id })),
+    carbonationAdvisories: Object.fromEntries((carbonationAdvisories.data || []).map((item) => [item.batch_id, {
+      confirmedTerminalGravity: item.confirmed_terminal_gravity,
+      beerVolumeLiters: item.beer_volume_liters == null ? null : Number(item.beer_volume_liters),
+      headspaceLiters: item.headspace_liters == null ? null : Number(item.headspace_liters),
+      hardwareMaxBar: item.hardware_max_bar == null ? null : Number(item.hardware_max_bar),
+      prvLimitBar: item.prv_limit_bar == null ? null : Number(item.prv_limit_bar),
+      deviceLimitBar: item.device_limit_bar == null ? null : Number(item.device_limit_bar),
+      co2MeasurementMethod: item.co2_measurement_method || null,
+      pressureBasis: item.pressure_basis,
+      altitudeMeters: item.altitude_meters == null ? null : Number(item.altitude_meters),
+      hopCreepAcknowledged: item.hop_creep_acknowledged,
+    }])),
     pendingSync: [],
     breweryId,
   };
@@ -174,7 +187,7 @@ function measurementPayload(item, batchId, processActionId, actionType) {
   return {
     id: item.id, client_id: item.id, batch_id: batchId, measured_at: item.measuredAt,
     gravity: item.gravity, ph: item.ph, temperature_c: item.temperature, pressure_bar: item.pressure,
-    co2_vol: item.co2Vol, note: item.note || null, process_action_id: processActionId,
+    co2_vol: item.co2Vol, co2_measurement_method: item.co2MeasurementMethod || null, note: item.note || null, process_action_id: processActionId,
     action_type: actionType, warning_codes: item.warningCodes || [], warning_details: item.warningDetails || [],
     anomaly_confirmed_at: item.anomalyConfirmedAt, anomaly_reason: item.anomalyReason,
     anomaly_baseline_measurement_id: item.anomalyBaselineId,

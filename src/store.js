@@ -18,6 +18,7 @@ const defaultState = {
   cleaningCycles: [],
   cleaningEvents: [],
   volumeEvents: [],
+  carbonationAdvisories: {},
   pendingSync: [],
   breweryDataVersion: null,
 };

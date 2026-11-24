@@ -4,6 +4,7 @@ import { ACTION_LABELS, ACTION_TYPES, BATCH_STATUS, FERMENTERS, addDays, buildWo
 import { loadState, saveState } from "./store.js";
 import { isSupabaseConfigured, supabase } from "./supabase.js";
 import { fetchRemoteState, syncEvent } from "./sync.js";
+import { ANALYSIS_METRICS, averageCurve, carbonationReadiness, comparableBatches, fermentationMetrics, sameProfileBatches, seriesForBatch } from "./analytics.js";
 
 const app = document.querySelector("#app");
 let state = await loadState();
@@ -14,6 +15,7 @@ let authMode = "login";
 let brewery = null;
 let operatorUnlocked = false;
 let requestedWorkItemId = new URLSearchParams(location.search).get("work");
+let selectedAnalysisBeerId = null;
 
 const OPERATOR_ID_SESSION_KEY = "brewtracker-operator-id";
 const OPERATOR_TOKEN_SESSION_KEY = "brewtracker-operator-session";
@@ -575,6 +577,11 @@ function urlBase64ToUint8Array(value) {
 function shell(content, title = "BrewTracker") {
   const taskCount = dailyTaskItems().length;
   app.innerHTML = `<div class="app-shell"><header class="topbar"><button class="brand" data-route="dashboard"><span class="brand-mark">BT</span><span>${escapeHtml(title)}</span></button><nav class="desktop-nav"><button data-route="dashboard" class="${route === "dashboard" ? "active" : ""}">${icon("LayoutDashboard", 17)} Tvertnes</button><button data-route="tasks" class="${route === "tasks" ? "active" : ""}">${icon("ListTodo", 17)} Darbi</button><button data-route="history" class="${route === "history" ? "active" : ""}">${icon("History", 17)} Vēsture</button><button data-route="analytics" class="${route === "analytics" ? "active" : ""}">${icon("ChartNoAxesCombined", 17)} Analīze</button><button data-route="settings" class="${route === "settings" ? "active" : ""}">${icon("Settings", 17)} Iestatījumi</button></nav>${taskCount ? `<button class="task-bell" data-show-daily-tasks title="Šodienas darbi">${icon("BellRing", 18)}<span>${taskCount}</span></button>` : ""}<div class="network ${navigator.onLine ? "online" : "offline"}">${navigator.onLine ? "Tiešsaistē" : "Bezsaistē"}</div><button class="operator" data-action="operators">${icon("UserRound", 18)} ${escapeHtml(currentOperator()?.name || "Operators")}</button></header>${content}<nav class="bottom-nav"><button data-route="dashboard" class="${route === "dashboard" ? "active" : ""}">${icon("LayoutDashboard")}<span>Tvertnes</span></button><button data-route="tasks" class="${route === "tasks" ? "active" : ""}">${icon("ListTodo")}<span>Darbi</span></button><button data-route="history" class="${route === "history" ? "active" : ""}">${icon("History")}<span>Vēsture</span></button><button data-route="analytics" class="${route === "analytics" ? "active" : ""}">${icon("ChartNoAxesCombined")}<span>Analīze</span></button><button data-route="settings" class="${route === "settings" ? "active" : ""}">${icon("Settings")}<span>Iestatījumi</span></button></nav></div>`;
+  const advisoryMethod = app.querySelector('#carbonation-advisory-form [name="co2MeasurementMethod"]');
+  if (advisoryMethod) {
+    const field = advisoryMethod.closest(".field");
+    field.innerHTML = "<label>CO₂ mērījuma metode</label><p class=\"field-hint\">Metodi ieraksti pie jaunākā CO₂ mērījuma, nevis šeit.</p>";
+  }
 }
 
 function dashboard() {
@@ -660,7 +667,7 @@ function batchDetail() {
   const beer = { ...rawBeer, name: escapeHtml(rawBeer?.name || "Nezināms alus") };
   const recommendation = getRecommendedAction(batch);
   const stats = calculateHistoryStats(state.batches, batch.beerTypeId);
-  shell(`<main class="narrow"><button class="text-button" data-route="dashboard">${icon("ArrowLeft")} Visas tvertnes</button><section class="batch-hero"><div><span class="batch-no">#${escapeHtml(batch.batchNumber)} · Tvertne ${escapeHtml(batch.fermenterNumber)}</span><h1>${escapeHtml(beer.name)} <small>${remainingInFermenter(batch)} t tvertnē no ${batch.volumeTons} t</small></h1><p>Sākts ${formatDate(batch.brewDate)}</p></div><div class="hero-actions"><span class="status">${batch.status === BATCH_STATUS.FINISHED ? "Pabeigts" : "Aktīvs"}</span><button class="danger-button" data-delete-batch="${batch.id}">${icon("Trash2", 17)} Dzēst partiju</button></div></section><section class="action-banner ${recommendation.tone}"><div>${icon("Sparkles", 24)}<span><small>Ieteicamā darbība</small><strong>${recommendation.label}</strong></span></div></section>${predictionPanel(batch, stats)}<section class="detail-grid"><article class="panel"><div class="panel-title"><h2>Jauns mērījums</h2><span>Var saglabāt bez interneta</span></div><form id="measurement-form" class="measurement-form"><div class="field full"><label>Mērījuma datums un laiks</label><input name="measuredAt" type="datetime-local" value="${localDateTimeValue()}" required></div><div class="field"><label>Blīvums</label><input name="gravity" inputmode="numeric" placeholder="1054" required></div><div class="field"><label>pH</label><input name="ph" type="number" min="0" step="0.01" placeholder="4.20" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" min="-5" max="50" step="0.1" placeholder="19.5" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" min="0" max="2" step="0.01" placeholder="0.80"></div><div class="field"><label>CO₂, vol <small>(neobligāts)</small></label><input name="co2Vol" type="number" min="0" max="5" step="0.1" placeholder="—"></div><div class="field full"><label>Saistītā fermentācijas darbība</label><select name="actionType"><option value="">Nav — tikai mērījums</option><option value="spund">Aizgriezts vārsts</option>${batch.hasDryHop ? `<option value="dry_hop">Pievienots Dry Hop</option>` : ""}<option value="cool">Iestatīta dzesēšana uz 0 °C</option></select></div><div class="field full"><label>Piezīme</label><input name="note" placeholder="Neobligāta piezīme"></div><div class="form-error full" id="measurement-error"></div><button class="primary full">${icon("Save")} Saglabāt mērījumu</button></form></article><article class="panel"><div class="panel-title"><h2>Fermentācijas darbības</h2></div><div class="action-list">${[ACTION_TYPES.SPUND, ...(batch.hasDryHop ? [ACTION_TYPES.DRY_HOP] : []), ACTION_TYPES.COOL].map((type) => actionButton(batch, type)).join("")}</div></article></section>${packagingPanel(batch)}${lossLedgerPanel(batch)}<section class="panel"><div class="panel-title"><h2>Mērījumu vēsture</h2><span>${batch.measurements.length} ieraksti</span></div>${measurementTable(batch)}</section></main>`, beer.name);
+  shell(`<main class="narrow"><button class="text-button" data-route="dashboard">${icon("ArrowLeft")} Visas tvertnes</button><section class="batch-hero"><div><span class="batch-no">#${escapeHtml(batch.batchNumber)} · Tvertne ${escapeHtml(batch.fermenterNumber)}</span><h1>${escapeHtml(beer.name)} <small>${remainingInFermenter(batch)} t tvertnē no ${batch.volumeTons} t</small></h1><p>Sākts ${formatDate(batch.brewDate)}</p></div><div class="hero-actions"><span class="status">${batch.status === BATCH_STATUS.FINISHED ? "Pabeigts" : "Aktīvs"}</span><button class="danger-button" data-delete-batch="${batch.id}">${icon("Trash2", 17)} Dzēst partiju</button></div></section><section class="action-banner ${recommendation.tone}"><div>${icon("Sparkles", 24)}<span><small>Ieteicamā darbība</small><strong>${recommendation.label}</strong></span></div></section>${predictionPanel(batch, stats)}<section class="detail-grid"><article class="panel"><div class="panel-title"><h2>Jauns mērījums</h2><span>Var saglabāt bez interneta</span></div><form id="measurement-form" class="measurement-form"><div class="field full"><label>Mērījuma datums un laiks</label><input name="measuredAt" type="datetime-local" value="${localDateTimeValue()}" required></div><div class="field"><label>Blīvums</label><input name="gravity" inputmode="numeric" placeholder="1054" required></div><div class="field"><label>pH</label><input name="ph" type="number" min="0" step="0.01" placeholder="4.20" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" min="-5" max="50" step="0.1" placeholder="19.5" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" min="0" max="2" step="0.01" placeholder="0.80"></div><div class="field"><label>CO₂, vol <small>(neobligāts)</small></label><input name="co2Vol" type="number" min="0" max="5" step="0.1" placeholder="—"></div><div class="field"><label>CO₂ metode/ierīce <small>(ja mērīts)</small></label><input name="co2MeasurementMethod" placeholder="Piem., CBox"></div><div class="field full"><label>Saistītā fermentācijas darbība</label><select name="actionType"><option value="">Nav — tikai mērījums</option><option value="spund">Aizgriezts vārsts</option>${batch.hasDryHop ? `<option value="dry_hop">Pievienots Dry Hop</option>` : ""}<option value="cool">Iestatīta dzesēšana uz 0 °C</option></select></div><div class="field full"><label>Piezīme</label><input name="note" placeholder="Neobligāta piezīme"></div><div class="form-error full" id="measurement-error"></div><button class="primary full">${icon("Save")} Saglabāt mērījumu</button></form></article><article class="panel"><div class="panel-title"><h2>Fermentācijas darbības</h2></div><div class="action-list">${[ACTION_TYPES.SPUND, ...(batch.hasDryHop ? [ACTION_TYPES.DRY_HOP] : []), ACTION_TYPES.COOL].map((type) => actionButton(batch, type)).join("")}</div></article></section>${packagingPanel(batch)}${lossLedgerPanel(batch)}<section class="panel"><div class="panel-title"><h2>Mērījumu vēsture</h2><span>${batch.measurements.length} ieraksti</span></div>${measurementTable(batch)}</section></main>`, beer.name);
 }
 
 function deleteBatchDialog(batchId) {
@@ -746,6 +753,7 @@ function validatedMeasurementDraft(data, measuredAt, actionType = null) {
     temperature: validateTemperature(data.temperature),
     pressure: validatePressure(data.pressure),
     co2Vol: validateCo2(data.co2Vol),
+    co2MeasurementMethod: data.co2MeasurementMethod?.trim() || null,
     actionType,
   };
 }
@@ -802,7 +810,7 @@ function actionDialog(type) {
   const batch = state.batches.find((item) => item.id === selectedBatchId);
   const latest = batch.measurements.at(-1);
   const dialog = document.createElement("dialog");
-  dialog.innerHTML = `<form method="dialog" id="action-form" class="dialog-card"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow">Procesa darbība</p><h2>${ACTION_LABELS[type]}</h2><p>Fiksē mērījumus darbības izpildes brīdī.</p><div class="measurement-form"><div class="field full"><label>Darbības datums un laiks</label><input name="performedAt" type="datetime-local" value="${localDateTimeValue()}" required></div><div class="field"><label>Blīvums</label><input name="gravity" value="${latest?.gravity ?? ""}" required></div><div class="field"><label>pH</label><input name="ph" type="number" step="0.01" value="${latest?.ph ?? ""}" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" step="0.1" value="${latest?.temperature ?? ""}" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" step="0.01" value="${latest?.pressure ?? ""}"></div><div class="field"><label>CO₂, vol <small>(neobligāts)</small></label><input name="co2Vol" type="number" min="0" max="5" step="0.1" value="${latest?.co2Vol ?? ""}"></div><div class="form-error full" id="action-error"></div><button class="primary full" value="default">Apstiprināt darbību</button></div></form>`;
+  dialog.innerHTML = `<form method="dialog" id="action-form" class="dialog-card"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow">Procesa darbība</p><h2>${ACTION_LABELS[type]}</h2><p>Fiksē mērījumus darbības izpildes brīdī.</p><div class="measurement-form"><div class="field full"><label>Darbības datums un laiks</label><input name="performedAt" type="datetime-local" value="${localDateTimeValue()}" required></div><div class="field"><label>Blīvums</label><input name="gravity" value="${latest?.gravity ?? ""}" required></div><div class="field"><label>pH</label><input name="ph" type="number" step="0.01" value="${latest?.ph ?? ""}" required></div><div class="field"><label>Temperatūra °C</label><input name="temperature" type="number" step="0.1" value="${latest?.temperature ?? ""}" required></div><div class="field"><label>Spiediens bar</label><input name="pressure" type="number" step="0.01" value="${latest?.pressure ?? ""}"></div><div class="field"><label>CO₂, vol <small>(neobligāts)</small></label><input name="co2Vol" type="number" min="0" max="5" step="0.1" value="${latest?.co2Vol ?? ""}"></div><div class="field"><label>CO₂ metode/ierīce <small>(vajag karbonizācijas analīzei)</small></label><input name="co2MeasurementMethod" value="${escapeHtml(latest?.co2MeasurementMethod ?? "")}" placeholder="Piem., CBox"></div><div class="form-error full" id="action-error"></div><button class="primary full" value="default">Apstiprināt darbību</button></div></form>`;
   document.body.append(dialog); dialog.showModal();
   dialog.addEventListener("close", async () => { if (dialog.returnValue === "default") await completeAction(type, dialog.querySelector("form")); dialog.remove(); });
 }
@@ -1073,18 +1081,60 @@ async function ensureAcceptedWork(batchId, type) {
   catch(error){alert(`Darbu neizdevās pieņemt: ${friendlySyncError(error)}`);return false;}
 }
 
-function analyticsPage() {
-  const beers = state.beerTypes.map((beer) => ({
-    ...beer,
-    batches: state.batches.filter((batch) => batch.beerTypeId === beer.id && batch.status === BATCH_STATUS.FINISHED),
-  })).sort((a, b) => b.batches.length - a.batches.length);
-  shell(`<main><section class="page-heading"><div><p class="eyebrow">Vēsturisko datu salīdzinājums</p><h1>Alus analīze</h1><p>Katrs alus veids tiks analizēts atsevišķi pēc fermentācijas dienas. Jaunāko partiju salīdzināsim ar četrām iepriekšējām un visu šī alus partiju vidējo procesu.</p></div></section><section class="analysis-metrics">${["Blīvums", "pH", "Temperatūra", "Spiediens", "CO₂"].map((metric) => `<span>${icon(metric === "Temperatūra" ? "Thermometer" : metric === "Spiediens" ? "Gauge" : "ChartSpline", 17)} ${metric}</span>`).join("")}</section><section class="analysis-grid">${beers.length ? beers.map((beer) => analysisBeerCard(beer)).join("") : `<div class="empty-state analysis-empty">${icon("ChartNoAxesCombined", 44)}<h2>Analīzei vēl nav alus datu</h2><p>Pēc pabeigtu partiju uzkrāšanas katram alum šeit būs savas līknes.</p></div>`}</section><section class="panel analysis-note"><div><p class="eyebrow">Plānotā analīze</p><h2>Procesa vienādības kontrole</h2><p>Vienāds fermentācijas profils palīdzēs laikus pamanīt, ka jaunākā partija uzvedas citādi.</p></div><ul><li>Jaunākā partija — izcelta galvenā līkne</li><li>Četras iepriekšējās tā paša alus partijas — salīdzinājuma līknes</li><li>Visu šī alus vēsturisko partiju kopējā vidējā līkne</li><li>Blīvums, pH, temperatūra, spiediens un CO₂ pēc fermentācijas dienas</li><li>Vārsta, Dry Hop, dzesēšanas, filtrēšanas un pildīšanas punkti</li><li>Novirze no vidējā un brīdinājums par neparastu fermentācijas gaitu</li></ul></section></main>`, "Alus analīze");
+function chartSvg(seriesList, average, metric) {
+  const all = [...seriesList.flat(), ...average].filter((point) => point?.value != null);
+  if (all.length < 2) return `<div class="analysis-no-data">Nav pietiekamu ${escapeHtml(ANALYSIS_METRICS[metric].label)} mērījumu līknei.</div>`;
+  const min = Math.min(...all.map((point) => point.value));
+  const max = Math.max(...all.map((point) => point.value));
+  const maxDay = Math.max(1, ...all.map((point) => point.day));
+  const y = (value) => 100 - ((value - min) / Math.max(0.0001, max - min)) * 88 - 6;
+  const line = (points) => points.map((point, index) => `${index ? "L" : "M"}${(point.day / maxDay) * 100} ${y(point.value)}`).join(" ");
+  const band = average.filter((point) => point.count >= 5 && point.lower != null);
+  const bandPath = band.length > 1 ? `${line(band.map((point) => ({ ...point, value: point.upper })))} ${[...band].reverse().map((point) => `L${(point.day / maxDay) * 100} ${y(point.lower)}`).join(" ")} Z` : "";
+  return `<div class="analysis-chart" role="img" aria-label="${escapeHtml(ANALYSIS_METRICS[metric].label)} pēc fermentācijas dienas"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${bandPath ? `<path class="control-band" d="${bandPath}"/>` : ""}${seriesList.map((points, index) => `<path class="batch-line ${index === seriesList.length - 1 ? "current" : ""}" d="${line(points)}"/>`).join("")}${average.length > 1 ? `<path class="average-line" d="${line(average)}"/>` : ""}</svg><div class="chart-axis"><span>${min.toFixed(metric === "gravity" ? 0 : 1)}</span><span>${max.toFixed(metric === "gravity" ? 0 : 1)}</span><span>Fermentācijas diena 0–${maxDay}</span></div></div>`;
 }
 
-function analysisBeerCard(beer) {
-  const count = beer.batches.length;
-  const readiness = count >= 5 ? "Gatavs: jaunākā + 4 iepriekšējās" : count >= 2 ? "Var sākt salīdzināšanu" : "Vajadzīgas vismaz 2 pabeigtas partijas";
-  return `<article class="analysis-beer-card"><div class="analysis-card-head"><div><span>${count} pabeigtas partijas</span><h2>${escapeHtml(beer.name)}</h2></div><span class="analysis-status ${count >= 2 ? "ready" : ""}">${readiness}</span></div><div class="chart-placeholder" aria-hidden="true"><svg viewBox="0 0 420 110" preserveAspectRatio="none"><path d="M0 18 C65 25 80 52 140 48 S220 73 280 70 S350 91 420 92"/><path d="M0 27 C55 34 95 40 145 57 S230 62 285 78 S360 82 420 98"/><path class="average" d="M0 22 C60 30 90 46 143 52 S225 68 282 74 S355 87 420 95"/></svg></div><div class="analysis-legend"><span><i></i>Jaunākā + 4 iepriekšējās</span><span><i class="average"></i>Visu partiju vidējais</span></div></article>`;
+function metricCard(metric, visibleBatches, allBatches) {
+  const latest = visibleBatches.at(-1);
+  const lines = visibleBatches.map((batch) => seriesForBatch(batch, metric));
+  const average = averageCurve(allBatches, metric);
+  const sampleCount = allBatches.filter((batch) => seriesForBatch(batch, metric).length > 0).length;
+  const enoughBand = average.some((point) => point.count >= 5 && point.sd != null);
+  const current = seriesForBatch(latest, metric).at(-1);
+  const precision = metric === "gravity" ? 0 : 1;
+  const summary = current ? `Jaunākā vērtība: ${current.value.toFixed(precision)} ${ANALYSIS_METRICS[metric].unit}, ${current.day}. fermentācijas dienā; ${seriesForBatch(latest, metric).length} datu punkti.` : "Jaunākajā partijā šim rādītājam datu nav.";
+  return `<article class="analysis-metric-card"><div class="panel-title"><h3>${escapeHtml(ANALYSIS_METRICS[metric].label)} ${ANALYSIS_METRICS[metric].unit}</h3><span>${enoughBand ? "Normālais diapazons: ±1 SD" : `Diapazonam vajag vēl ${Math.max(0, 5 - sampleCount)} partijas ar šo mērījumu`}</span></div>${chartSvg(lines, average, metric)}<p class="chart-summary">${summary}</p><p class="chart-note">Plānās līnijas: pēdējās ${visibleBatches.length} partijas. Oranžā: visu pabeigto partiju vidējais. Punkti starp mērījumiem ir lineāri savienoti tikai attēlošanai; tukši vēsturiskie lauki netiek aizvietoti.</p>${latest ? `<small>Jaunākā: #${escapeHtml(latest.batchNumber)}</small>` : ""}</article>`;
+}
+
+function analysisSummary(batch, baseline) {
+  const stats = fermentationMetrics(batch, baseline);
+  const day = stats.predictedFgDay == null ? "Nav pietiekamu datu" : `${Math.ceil(stats.predictedFgDay)}. fermentācijas diena`;
+  return `<section class="analysis-summary-grid"><article><small>Blīvuma ātrums</small><strong>${stats.gravityRate == null ? "—" : `${stats.gravityRate.toFixed(1)} punkti/dienā`}</strong></article><article><small>pH ātrums</small><strong>${stats.phRate == null ? "—" : `${stats.phRate.toFixed(2)} pH/dienā`}</strong></article><article><small>Šķietamais norūgums</small><strong>${stats.apparentAttenuation == null ? "—" : `${stats.apparentAttenuation.toFixed(1)} %`}</strong></article><article><small>Prognozēts FG</small><strong>${day}</strong></article><article><small>Novirze no vidējā</small><strong>${stats.deviationPercent == null ? "Nepietiek datu" : `${stats.deviationPercent.toFixed(0)} %`}</strong></article><article><small>Pirmā būtiskā atšķirība</small><strong>${stats.firstDifference == null ? "Nav noteikta" : `${stats.firstDifference}. dienā`}</strong></article></section>`;
+}
+
+function carbonationAdvisor(batch) {
+  const config = state.carbonationAdvisories?.[batch.id] || {};
+  const readiness = carbonationReadiness(batch, config);
+  const blockers = readiness.blockers.map((blocker) => `<li>${escapeHtml(blocker)}</li>`).join("");
+  const diagnostic = readiness.ready ? `<p><strong>CO₂ starpība:</strong> ${readiness.co2Deficit.toFixed(2)} vol · <strong>Atlikušais blīvums līdz apstiprinātam FG:</strong> ${readiness.residualGravityPoints} punkti. Tie ir procesa rādītāji, nevis spiediena iestatījums.</p>` : "";
+  return `<section class="panel carbonation-advisor"><div class="panel-title"><div><p class="eyebrow">Drošības palīgs</p><h2>Karbonizācijas padomdevējs</h2></div><span class="analysis-status">${readiness.ready ? "Dati pilni — manuāla pārbaude obligāta" : "Bloķēts: trūkst datu"}</span></div><p>Šis rīks nekontrolē vārstu un nedod automātisku spiediena iestatījumu. Maksimālā darba robeža ir zemākā no ievadītajām iekārtas robežām un 2 bar operacionālās robežas.</p>${readiness.ready ? `<div class="carbonation-ready"><strong>Manuālai pārbaudei pieejamā augšējā robeža: ${readiness.ceiling.toFixed(2)} bar (gauge)</strong>${diagnostic}<p>Aprēķinātais iestatījums netiek dots automātiski: pirms spundes iestatīšanas apstiprini terminālo blīvumu un pārbaudi ražotāja/PRV specifikāciju.</p></div>` : `<div class="carbonation-blockers"><strong>Lai atbloķētu drošu izvērtēšanu, ievadi:</strong><ul>${blockers}</ul></div>`}<form id="carbonation-advisory-form" class="form-card compact-form" data-batch-id="${batch.id}"><div class="field"><label>Apstiprināts gala blīvums</label><input name="confirmedTerminalGravity" inputmode="numeric" value="${config.confirmedTerminalGravity ?? ""}" placeholder="1012"></div><div class="field"><label>CO₂ mērīšanas metode/ierīce</label><input name="co2MeasurementMethod" value="${escapeHtml(config.co2MeasurementMethod ?? "")}" placeholder="Piem., CBox / manometrs"></div><div class="field"><label>Alus tilpums, l</label><input name="beerVolumeLiters" type="number" min="1" step="1" value="${config.beerVolumeLiters ?? ""}"></div><div class="field"><label>Galvas telpa, l</label><input name="headspaceLiters" type="number" min="1" step="1" value="${config.headspaceLiters ?? ""}"></div><div class="field"><label>Tvertnes sertificētā robeža, bar</label><input name="hardwareMaxBar" type="number" min="0.01" max="2" step="0.01" value="${config.hardwareMaxBar ?? ""}"></div><div class="field"><label>PRV robeža, bar</label><input name="prvLimitBar" type="number" min="0.01" max="2" step="0.01" value="${config.prvLimitBar ?? ""}"></div><div class="field"><label>Spundes/manometra robeža, bar</label><input name="deviceLimitBar" type="number" min="0.01" max="2" step="0.01" value="${config.deviceLimitBar ?? ""}"></div><div class="field"><label>Augstums v.j.l., m</label><input name="altitudeMeters" type="number" step="1" value="${config.altitudeMeters ?? ""}"></div><div class="field"><label>Spiediena pamats</label><select name="pressureBasis"><option value="">Izvēlies</option><option value="gauge" ${config.pressureBasis === "gauge" ? "selected" : ""}>Manometra spiediens (gauge)</option></select></div>${batch.hasDryHop ? `<label class="check full"><input name="hopCreepAcknowledged" type="checkbox" ${config.hopCreepAcknowledged ? "checked" : ""}><span>Es apzinos, ka Dry Hop/hop creep var turpināt fermentāciju un paaugstināt spiedienu.</span></label>` : ""}<button class="secondary full" type="submit">Saglabāt padomdevēja datus</button></form></section>`;
+}
+
+function analyticsPage() {
+  const eligible = state.beerTypes.map((beer) => {
+    const completed = comparableBatches(state.batches, beer.id);
+    const active = state.batches.filter((batch) => batch.beerTypeId === beer.id && batch.status !== BATCH_STATUS.FINISHED && (batch.measurements || []).length)
+      .sort((a, b) => new Date(a.brewDate) - new Date(b.brewDate)).at(-1) || null;
+    return { beer, completed, active };
+  }).filter((entry) => entry.completed.length || entry.active);
+  if (!selectedAnalysisBeerId || !eligible.some((entry) => entry.beer.id === selectedAnalysisBeerId)) selectedAnalysisBeerId = eligible[0]?.beer.id || null;
+  const selected = eligible.find((entry) => entry.beer.id === selectedAnalysisBeerId);
+  if (!selected) { shell(`<main><section class="empty-state analysis-empty">${icon("ChartNoAxesCombined",44)}<h1>Analīzei vēl nav pabeigtu partiju ar mērījumiem</h1><p>Vēsturiskos importus ar nepilniem laukiem rādīsim kā nepilnas līknes — dati netiks izdomāti.</p></section></main>`, "Alus analīze"); return; }
+  const baseCompleted = selected.completed;
+  const latest = selected.active || baseCompleted.at(-1);
+  const all = sameProfileBatches(baseCompleted, latest);
+  const visible = selected.active ? [...all.slice(-4), selected.active] : all.slice(-5);
+  shell(`<main><section class="page-heading"><div><p class="eyebrow">Vēsturisko datu salīdzinājums</p><h1>${escapeHtml(selected.beer.name)} analīze</h1><p>${selected.active ? `Aktīvā partija #${escapeHtml(selected.active.batchNumber)} salīdzināta ar pēdējām 4 pabeigtajām.` : "Pēdējās 5 pabeigtās partijas salīdzinātas."} Vidējais izmanto visas ${all.length} pabeigtās šī alus partijas.</p></div><select class="analysis-select" data-analysis-beer>${eligible.map((entry) => `<option value="${escapeHtml(entry.beer.id)}" ${entry.beer.id === selected.beer.id ? "selected" : ""}>${escapeHtml(entry.beer.name)} · ${entry.completed.length} pabeigtas</option>`).join("")}</select></section>${analysisSummary(latest, all)}<section class="analysis-metric-grid">${Object.keys(ANALYSIS_METRICS).map((metric) => metricCard(metric, visible, all)).join("")}</section><section class="panel analysis-method"><h2>Kā lasīt analīzi</h2><p>Līknes apraksta procesu, nevis garšas cēloni. Jaunākā partija ir salīdzināma ar vēsturi tikai tad, ja abās ir līdzīgi mērījumi. Kontroles diapazons parādās no 5 partiju parauga; mazākam paraugam rādām vidējo bez “normas” apgalvojuma.</p></section>${carbonationAdvisor(latest)}</main>`, "Alus analīze");
 }
 
 function historyPage() {
@@ -1236,6 +1286,13 @@ document.addEventListener("click", async (event) => {
   if (event.target.closest('[data-action="operators"]')) await operatorDialog();
 });
 
+document.addEventListener("change", (event) => {
+  if (event.target.matches("[data-analysis-beer]")) {
+    selectedAnalysisBeerId = event.target.value;
+    render();
+  }
+});
+
 document.addEventListener("submit", async (event) => {
   if (event.target.method === "dialog") return;
   event.preventDefault();
@@ -1253,7 +1310,37 @@ document.addEventListener("submit", async (event) => {
     state.operators.push(operator); state = await saveState(state); render();
   }
   if (event.target.id === "change-pin-form") { await changeOperatorPin(event.target); }
+  if (event.target.id === "carbonation-advisory-form") { await saveCarbonationAdvisory(event.target); }
 });
+
+async function saveCarbonationAdvisory(form) {
+  if (!navigator.onLine) { alert("Karbonizācijas drošības datus var saglabāt tikai tiešsaistē."); return; }
+  const data = Object.fromEntries(new FormData(form));
+  const numberOrNull = (value) => value === "" || value == null ? null : Number(value);
+  const { data: row, error } = await supabase.rpc("upsert_batch_carbonation_advisory", {
+    session_token: operatorSessionToken(), target_batch_id: form.dataset.batchId,
+    terminal_gravity: numberOrNull(data.confirmedTerminalGravity), beer_liters: numberOrNull(data.beerVolumeLiters),
+    headspace: numberOrNull(data.headspaceLiters), hardware_limit: numberOrNull(data.hardwareMaxBar),
+    prv_limit: numberOrNull(data.prvLimitBar), device_limit: numberOrNull(data.deviceLimitBar), co2_method: data.co2MeasurementMethod?.trim() || null,
+    basis: data.pressureBasis || null, altitude: numberOrNull(data.altitudeMeters),
+    acknowledge_hop_creep: data.hopCreepAcknowledged === "on",
+  });
+  if (error) { alert(`Datus neizdevās saglabāt: ${friendlySyncError(error)}`); return; }
+  state.carbonationAdvisories ||= {};
+  state.carbonationAdvisories[form.dataset.batchId] = {
+    confirmedTerminalGravity: row.confirmed_terminal_gravity,
+    beerVolumeLiters: row.beer_volume_liters == null ? null : Number(row.beer_volume_liters),
+    headspaceLiters: row.headspace_liters == null ? null : Number(row.headspace_liters),
+    hardwareMaxBar: row.hardware_max_bar == null ? null : Number(row.hardware_max_bar),
+    prvLimitBar: row.prv_limit_bar == null ? null : Number(row.prv_limit_bar),
+    deviceLimitBar: row.device_limit_bar == null ? null : Number(row.device_limit_bar),
+    co2MeasurementMethod: row.co2_measurement_method || null,
+    pressureBasis: row.pressure_basis, altitudeMeters: row.altitude_meters == null ? null : Number(row.altitude_meters),
+    hopCreepAcknowledged: row.hop_creep_acknowledged,
+  };
+  state = await saveState(state);
+  render();
+}
 
 window.addEventListener("online", async () => { await refreshRemoteState(); render(); });
 window.addEventListener("offline", render);

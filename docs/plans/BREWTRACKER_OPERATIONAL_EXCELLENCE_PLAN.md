@@ -360,15 +360,15 @@ The UI labels this state **Brīva · gatava (pārnests statuss)**, never “tīr
 
 ### Verification checklist
 
-- [ ] Curves align by elapsed day/time rather than array position or calendar date.
-- [ ] Missing pH/pressure/CO₂ is excluded, not converted to zero.
-- [ ] Latest + previous four + all-history average use only comparable profile versions.
-- [ ] Rates and apparent attenuation match hand-calculated fixtures.
-- [ ] No exact FG date appears when sample count/data coverage is insufficient.
-- [ ] No pressure recommendation appears without every safety prerequisite.
-- [ ] Recommendation never exceeds vessel, PRV, or device limit.
-- [ ] Dry Hop triggers hop-creep warning.
-- [ ] UI never claims matching curves prove ingredients caused a flavor difference.
+- [x] Curves align by elapsed fermentation day/time rather than row index or calendar date.
+- [x] Missing pH/pressure/CO₂ is excluded, not converted to zero.
+- [x] Latest active/recent + previous four + all-history average are filtered to the saved batch process profile and volume class.
+- [x] Rates and apparent attenuation have hand-calculated fixtures.
+- [x] FG projection requires at least three valid gravity observations; it is not an exact date promise.
+- [x] No pressure recommendation appears without every safety prerequisite.
+- [x] The advisor displays no setpoint at all and caps its visible upper boundary at the lowest hardware/PRV/device limit and 2 bar.
+- [x] Dry Hop blocks the safety checklist until hop-creep risk is acknowledged.
+- [x] UI says curves describe process only and does not claim that they prove a flavour cause.
 
 ### Anti-pattern guards
 
