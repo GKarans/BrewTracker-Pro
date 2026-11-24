@@ -79,6 +79,8 @@ Operators can see who owns every brewery task, safely detect abnormal measuremen
 
 ## Phase 1 — Trusted operator session, audit, and reversible data foundation
 
+Implementation status (2026-11-24): operator sessions and session-attributed synchronization are committed. Audit triggers, reversible batch trash/restore, and optimistic row versions are implemented locally in migration `202611240001_audit_soft_delete_versions.sql`; production migration and live conflict/restore verification remain pending before deployment.
+
 **How this serves the primary goal:** Every acceptance, override, cleaning, deletion, and restoration is attributable to a real PIN-unlocked operator and recoverable after mistakes.
 
 ### What to implement

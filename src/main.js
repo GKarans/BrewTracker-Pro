@@ -220,37 +220,142 @@ async function refreshRemoteState() {
       }));
       state = await saveState(state);
     }
+    let syncStopped = false;
     for (const event of [...state.pendingSync]) {
-      await syncEvent(state, event, brewery.id, token);
-      state.pendingSync = state.pendingSync.filter((item) => item.id !== event.id);
+      try {
+        await syncEvent(state, event, brewery.id, token);
+        state.pendingSync = state.pendingSync.filter((item) => item.id !== event.id);
+      } catch (error) {
+        console.error("Queued synchronization failed", error);
+        if (isTransientSyncError(error)) break;
+        state.pendingSync = state.pendingSync.filter((item) => item.id !== event.id);
+        state = await saveState(state);
+        const conflict = /VERSION_CONFLICT/i.test(error.message || "");
+        alert(conflict
+          ? "Bezsaistes izmaiņa konfliktē ar jaunāku ierakstu citā ierīcē un netika piemērota. Ielādēta servera versija."
+          : `Bezsaistes izmaiņu nevarēja saglabāt: ${friendlySyncError(error)}`);
+        syncStopped = true;
+        break;
+      }
+    }
+    if (syncStopped) {
+      await reloadRemotePreservingQueue(token);
+      render();
+      return;
     }
     const operatorId = state.activeOperatorId;
     const operators = state.operators;
-    state = await fetchRemoteState(state, brewery.id);
+    state = await fetchRemoteState(state, brewery.id, token);
     state.operators = operators;
     state.activeOperatorId = operatorId;
     state = await saveState(state);
   } catch (error) {
     console.error("Supabase synchronization failed", error);
+    if (!isTransientSyncError(error)) alert(`Datu ielāde neizdevās: ${friendlySyncError(error)}`);
   }
 }
 
 async function saveAndSync(event) {
-  const attributedEvent = { ...event, operatorId: state.activeOperatorId };
+  if (["processBundle", "packagingCompletion"].includes(event.entity)) {
+    const batch = state.batches.find((item) => item.id === event.batchId);
+    const action = batch?.actions.find((item) => item.id === event.actionId);
+    const measurement = batch?.measurements.find((item) => item.id === event.measurementId);
+    const packagingRun = batch?.packagingRuns?.find((item) => item.id === event.packagingRunId);
+    if (!batch || !action || (event.entity === "processBundle" && !measurement) || (event.entity === "packagingCompletion" && !packagingRun)) {
+      alert("Saistītās darbības dati nav pilnīgi; nekas netika sinhronizēts.");
+      return false;
+    }
+    const beer = state.beerTypes.find((item) => item.id === batch.beerTypeId);
+    const expectedVersions = {
+      batch: batch.version ?? 0,
+      action: action.version ?? 0,
+      measurement: measurement?.version ?? 0,
+      packagingRun: packagingRun?.version ?? 0,
+      beer: beer?.version ?? 0,
+    };
+    batch.version = expectedVersions.batch + 1;
+    action.version = expectedVersions.action + 1;
+    if (measurement) measurement.version = expectedVersions.measurement + 1;
+    if (packagingRun) packagingRun.version = expectedVersions.packagingRun + 1;
+    if (beer) beer.version = expectedVersions.beer + 1;
+    event = { ...event, entityId: batch.id, expectedVersions, beerExpectedVersion: expectedVersions.beer };
+  }
+  const entity = findLocalEntity(event.entity, event.entityId);
+  const expectedVersion = event.expectedVersion ?? entity?.version ?? event.expectedVersions?.batch ?? 0;
+  if (entity) entity.version = expectedVersion + 1;
+  let beerExpectedVersion;
+  if (event.entity === "batch" && ["create", "update"].includes(event.operation)) {
+    const batch = state.batches.find((item) => item.id === event.entityId);
+    const beer = state.beerTypes.find((item) => item.id === batch?.beerTypeId);
+    if (beer) {
+      beerExpectedVersion = beer.version ?? 0;
+      beer.version = beerExpectedVersion + 1;
+    }
+  }
+  const attributedEvent = { ...event, expectedVersion, beerExpectedVersion, operatorId: state.activeOperatorId };
   state = await saveState(state, attributedEvent);
-  if (!navigator.onLine || !brewery || !operatorUnlocked) return;
+  if (!navigator.onLine || !brewery || !operatorUnlocked) return true;
   const queued = state.pendingSync.at(-1);
   try {
     await syncEvent(state, queued, brewery.id, operatorSessionToken());
     state.pendingSync = state.pendingSync.filter((item) => item.id !== queued.id);
     state = await saveState(state);
+    return true;
   } catch (error) {
-    console.error("Change queued for synchronization", error);
+    console.error("Change synchronization failed", error);
+    if (/VERSION_CONFLICT/i.test(error.message || "")) {
+      state.pendingSync = state.pendingSync.filter((item) => item.id !== queued.id);
+      state = await saveState(state);
+      alert("Šo ierakstu citā ierīcē jau mainīja. Tiks ielādēta jaunākā servera versija; pārbaudi datus un atkārto darbību.");
+      await reloadRemotePreservingQueue(operatorSessionToken());
+      render();
+      return false;
+    }
     if (/session invalid|session expired|does not match offline event/i.test(error.message || "")) {
       clearOperatorSession();
       operatorUnlockPage("Operatora sesija ir beigusies. Ievadi PIN, lai droši sinhronizētu izmaiņas.");
+      return false;
     }
+    if (isTransientSyncError(error)) return true;
+    state.pendingSync = state.pendingSync.filter((item) => item.id !== queued.id);
+    state = await saveState(state);
+    alert(`Izmaiņu nevarēja saglabāt: ${friendlySyncError(error)}`);
+    await reloadRemotePreservingQueue(operatorSessionToken());
+    render();
+    return false;
   }
+}
+
+function isTransientSyncError(error) {
+  const message = `${error?.message || error || ""}`;
+  const status = Number(error?.status || error?.statusCode || 0);
+  return !navigator.onLine || status >= 500 || /failed to fetch|networkerror|network request|timeout|load failed/i.test(message);
+}
+
+function friendlySyncError(error) {
+  const message = `${error?.message || error || "Nezināma kļūda"}`;
+  if (/duplicate key|unique constraint|batches_active_number/i.test(message)) return "partijas numurs jau tiek izmantots.";
+  if (/one_active_batch_per_fermenter/i.test(message)) return "tvertne jau ir aizņemta; vispirms atbrīvo tvertni.";
+  return message;
+}
+
+async function reloadRemotePreservingQueue(token) {
+  const pendingSync = [...state.pendingSync];
+  const operatorId = state.activeOperatorId;
+  const operators = state.operators;
+  const remote = await fetchRemoteState(state, brewery.id, token);
+  state = { ...remote, pendingSync, operators, activeOperatorId: operatorId };
+  state = await saveState(state);
+}
+
+function findLocalEntity(entity, id) {
+  if (entity === "batch") return state.batches.find((item) => item.id === id);
+  for (const batch of state.batches) {
+    if (entity === "measurement") { const item = batch.measurements.find((value) => value.id === id); if (item) return item; }
+    if (entity === "action") { const item = batch.actions.find((value) => value.id === id); if (item) return item; }
+    if (entity === "packagingRun") { const item = (batch.packagingRuns || []).find((value) => value.id === id); if (item) return item; }
+  }
+  return null;
 }
 
 async function submitAuth(form) {
@@ -443,9 +548,9 @@ async function submitBatch(form) {
     const targets = { ogTarget: validateGravity(data.ogTarget), fgTarget: validateGravity(data.fgTarget), spundGravity: validateGravity(data.spundGravity), coolingGravity: validateGravity(data.coolingGravity), hasDryHop: data.hasDryHop === "on", dryHopGravity: data.hasDryHop === "on" ? validateGravity(data.dryHopGravity) : null, co2Target: Number(data.co2Target) };
     if (!beer) { beer = { id: crypto.randomUUID(), name: data.beerName.trim(), ...targets }; state.beerTypes.push(beer); }
     else Object.assign(beer, targets);
-    const batch = { id: crypto.randomUUID(), batchNumber, year, sequence, fermenterNumber, beerTypeId: beer.id, volumeTons: Number(data.volumeTons), brewDate: data.brewDate, status: BATCH_STATUS.ACTIVE, ...targets, measurements: [], actions: [], packagingRuns: [], createdAt: new Date().toISOString(), createdBy: currentOperator().id };
+    const batch = { id: crypto.randomUUID(), version: 0, batchNumber, year, sequence, fermenterNumber, beerTypeId: beer.id, volumeTons: Number(data.volumeTons), brewDate: data.brewDate, status: BATCH_STATUS.ACTIVE, ...targets, measurements: [], actions: [], packagingRuns: [], createdAt: new Date().toISOString(), createdBy: currentOperator().id };
     state.batches.push(batch);
-    await saveAndSync({ entity: "batch", operation: "create", entityId: batch.id });
+    if (!await saveAndSync({ entity: "batch", operation: "create", entityId: batch.id })) return;
     selectedBatchId = batch.id; route = "batch"; render();
   } catch (error) { document.querySelector("#form-error").textContent = error.message; }
 }
@@ -465,14 +570,21 @@ function deleteBatchDialog(batchId) {
   const beer = state.beerTypes.find((item) => item.id === batch?.beerTypeId);
   if (!batch) return;
   const dialog = document.createElement("dialog");
-  dialog.innerHTML = `<form method="dialog" class="dialog-card delete-dialog"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow danger-text">Neatgriezeniska darbība</p><h2>Dzēst partiju #${escapeHtml(batch.batchNumber)}?</h2><p>Tiks dzēsta partija “${escapeHtml(beer?.name || "Nezināms alus")}” un visi tās mērījumi, fermentācijas darbības un pildīšanas cikli.</p><div class="dialog-actions"><button class="secondary" value="cancel">Atcelt</button><button class="danger-button solid" value="delete">${icon("Trash2", 17)} Dzēst partiju</button></div></form>`;
+  dialog.innerHTML = `<form method="dialog" class="dialog-card delete-dialog"><button class="dialog-close" value="cancel">${icon("X")}</button><p class="eyebrow danger-text">Atgriezeniska dzēšana</p><h2>Pārvietot partiju #${escapeHtml(batch.batchNumber)} uz miskasti?</h2><p>Partija “${escapeHtml(beer?.name || "Nezināms alus")}” pazudīs no darba skatiem un statistikas, bet to varēs atjaunot vēstures sadaļā.</p><div class="field"><label>Dzēšanas iemesls</label><input name="reason" required placeholder="Piemēram, testa partija vai kļūdaina ievade"></div><div class="dialog-actions"><button class="secondary" value="cancel">Atcelt</button><button class="danger-button solid" value="delete">${icon("Trash2", 17)} Pārvietot uz miskasti</button></div></form>`;
   document.body.append(dialog); dialog.showModal();
-  dialog.addEventListener("close", async () => { if (dialog.returnValue === "delete") await deleteBatch(batchId); dialog.remove(); });
+  dialog.addEventListener("close", async () => { if (dialog.returnValue === "delete") { const reason = new FormData(dialog.querySelector("form")).get("reason")?.trim(); if (reason) await deleteBatch(batchId, reason); } dialog.remove(); });
 }
 
-async function deleteBatch(batchId) {
+async function deleteBatch(batchId, reason) {
+  const batch = state.batches.find((item) => item.id === batchId);
+  if (!batch) return;
+  const expectedVersion = batch.version || 0;
+  const accepted = await saveAndSync({ entity: "batch", operation: "delete", entityId: batchId, expectedVersion, reason });
+  if (!accepted) return;
+  state.deletedBatches ||= [];
+  state.deletedBatches.unshift({ id: batch.id, batchNumber: batch.batchNumber, brewDate: batch.brewDate, beerName: state.beerTypes.find((beer) => beer.id === batch.beerTypeId)?.name || "Nezināms alus", version: expectedVersion + 1, deletedAt: new Date().toISOString(), deleteReason: reason, deletedByName: currentOperator()?.name });
   state.batches = state.batches.filter((item) => item.id !== batchId);
-  await saveAndSync({ entity: "batch", operation: "delete", entityId: batchId });
+  state = await saveState(state);
   selectedBatchId = null; route = "dashboard"; render();
 }
 
@@ -508,18 +620,19 @@ async function submitMeasurement(form) {
     const measuredAt = new Date(data.measuredAt).toISOString();
     let processActionId = null;
     if (data.actionType) {
-      const action = { id: crypto.randomUUID(), type: data.actionType, performedAt: measuredAt, gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), note: data.note.trim(), operatorId: currentOperator().id };
+      const previousAction = batch.actions.find((item) => item.type === data.actionType);
+      const action = { id: previousAction?.id || crypto.randomUUID(), version: previousAction?.version || 0, type: data.actionType, performedAt: measuredAt, gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), note: data.note.trim(), operatorId: currentOperator().id };
       batch.actions = batch.actions.filter((item) => item.type !== data.actionType);
       batch.actions.push(action);
       if (data.actionType === ACTION_TYPES.DRY_HOP) batch.status = BATCH_STATUS.DRY_HOP;
       if (data.actionType === ACTION_TYPES.COOL) batch.status = BATCH_STATUS.COOLING;
       processActionId = action.id;
-      await saveAndSync({ entity: "action", operation: "create", entityId: action.id });
-      await saveAndSync({ entity: "batch", operation: "update", entityId: batch.id });
     }
-    const measurement = { id: crypto.randomUUID(), measuredAt, gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), note: data.note.trim(), operatorId: currentOperator().id, processActionId, actionType: data.actionType || null };
+    const measurement = { id: crypto.randomUUID(), version: 0, measuredAt, gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), note: data.note.trim(), operatorId: currentOperator().id, processActionId, actionType: data.actionType || null };
     batch.measurements.push(measurement);
-    await saveAndSync({ entity: "measurement", operation: "create", entityId: measurement.id });
+    if (data.actionType) {
+      if (!await saveAndSync({ entity: "processBundle", operation: "apply", batchId: batch.id, actionId: processActionId, measurementId: measurement.id })) return;
+    } else if (!await saveAndSync({ entity: "measurement", operation: "create", entityId: measurement.id })) return;
     render();
   } catch (error) { document.querySelector("#measurement-error").textContent = error.message; }
 }
@@ -552,9 +665,10 @@ async function createPackagingRun(form) {
     const remaining = remainingInFermenter(batch);
     const volumeTons = Number(data.volumeTons);
     if (volumeTons <= 0 || volumeTons > 4 || volumeTons > remaining) throw new Error(`Atļauts filtrēt ne vairāk kā ${Math.min(4, remaining)} t.`);
-    const run = { id: crypto.randomUUID(), clientId: crypto.randomUUID(), runNumber: (batch.packagingRuns || []).length + 1, volumeTons, centrifugeLiters: data.centrifugeLiters === "" ? null : Number(data.centrifugeLiters), status: "filtered", filteredAt: new Date(data.filteredAt).toISOString(), packagedAt: null, gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), co2Vol: null, operatorId: currentOperator().id };
+    const run = { id: crypto.randomUUID(), version: 0, clientId: crypto.randomUUID(), runNumber: (batch.packagingRuns || []).length + 1, volumeTons, centrifugeLiters: data.centrifugeLiters === "" ? null : Number(data.centrifugeLiters), status: "filtered", filteredAt: new Date(data.filteredAt).toISOString(), packagedAt: null, gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), co2Vol: null, operatorId: currentOperator().id };
     batch.packagingRuns ||= []; batch.packagingRuns.push(run);
-    await saveAndSync({ entity: "packagingRun", operation: "create", entityId: run.id }); render();
+    if (!await saveAndSync({ entity: "packagingRun", operation: "create", entityId: run.id })) return;
+    render();
   } catch (error) { alert(error.message); }
 }
 
@@ -577,13 +691,13 @@ async function finishPackagingRun(runId, form) {
       batch.status = BATCH_STATUS.FINISHED;
       batch.finishedAt = run.packagedAt;
       batch.actions = batch.actions.filter((item) => item.type !== ACTION_TYPES.FINISH);
-      batch.actions.push({ id: crypto.randomUUID(), type: ACTION_TYPES.FINISH, performedAt: run.packagedAt, gravity: run.gravity, ph: run.ph, temperature: run.temperature, pressure: run.pressure, operatorId: run.operatorId });
+      batch.actions.push({ id: crypto.randomUUID(), version: 0, type: ACTION_TYPES.FINISH, performedAt: run.packagedAt, gravity: run.gravity, ph: run.ph, temperature: run.temperature, pressure: run.pressure, operatorId: run.operatorId });
     }
-    await saveAndSync({ entity: "packagingRun", operation: "update", entityId: run.id }); render();
     if (batch.status === BATCH_STATUS.FINISHED) {
-      await saveAndSync({ entity: "action", operation: "create", entityId: batch.actions.find((item) => item.type === ACTION_TYPES.FINISH).id });
-      await saveAndSync({ entity: "batch", operation: "update", entityId: batch.id });
-    }
+      const finishAction = batch.actions.find((item) => item.type === ACTION_TYPES.FINISH);
+      if (!await saveAndSync({ entity: "packagingCompletion", operation: "apply", batchId: batch.id, packagingRunId: run.id, actionId: finishAction.id })) return;
+    } else if (!await saveAndSync({ entity: "packagingRun", operation: "update", entityId: run.id })) return;
+    render();
   } catch (error) { alert(error.message); }
 }
 
@@ -591,16 +705,16 @@ async function completeAction(type, form) {
   try {
     const data = Object.fromEntries(new FormData(form));
     const batch = state.batches.find((item) => item.id === selectedBatchId);
-    const action = { id: crypto.randomUUID(), type, performedAt: new Date(data.performedAt).toISOString(), gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), operatorId: currentOperator().id };
+    const previousAction = batch.actions.find((item) => item.type === type);
+    const action = { id: previousAction?.id || crypto.randomUUID(), version: previousAction?.version || 0, type, performedAt: new Date(data.performedAt).toISOString(), gravity: validateGravity(data.gravity), ph: validatePh(data.ph), temperature: validateTemperature(data.temperature), pressure: validatePressure(data.pressure), operatorId: currentOperator().id };
     batch.actions = batch.actions.filter((item) => item.type !== type); batch.actions.push(action);
     if (type === ACTION_TYPES.DRY_HOP) batch.status = BATCH_STATUS.DRY_HOP;
     if (type === ACTION_TYPES.COOL) batch.status = BATCH_STATUS.COOLING;
     if (type === ACTION_TYPES.FINISH) batch.status = BATCH_STATUS.FINISHED;
-    const actionMeasurement = { id: crypto.randomUUID(), measuredAt: action.performedAt, gravity: action.gravity, ph: action.ph, temperature: action.temperature, pressure: action.pressure, note: ACTION_LABELS[type], operatorId: action.operatorId, processActionId: action.id, actionType: type };
+    const actionMeasurement = { id: crypto.randomUUID(), version: 0, measuredAt: action.performedAt, gravity: action.gravity, ph: action.ph, temperature: action.temperature, pressure: action.pressure, note: ACTION_LABELS[type], operatorId: action.operatorId, processActionId: action.id, actionType: type };
     batch.measurements.push(actionMeasurement);
-    await saveAndSync({ entity: "action", operation: "create", entityId: action.id }); render();
-    await saveAndSync({ entity: "measurement", operation: "create", entityId: actionMeasurement.id });
-    await saveAndSync({ entity: "batch", operation: "update", entityId: batch.id });
+    if (!await saveAndSync({ entity: "processBundle", operation: "apply", batchId: batch.id, actionId: action.id, measurementId: actionMeasurement.id })) return;
+    render();
   } catch (error) { alert(error.message); }
 }
 
@@ -643,7 +757,26 @@ function analysisBeerCard(beer) {
 
 function historyPage() {
   const finished = state.batches.filter((batch) => batch.status === BATCH_STATUS.FINISHED).reverse();
-  shell(`<main><section class="page-heading"><div><p class="eyebrow">Pabeigtās partijas</p><h1>Vēsture</h1></div></section><section class="history-list">${finished.length ? finished.map((batch) => { const beer = state.beerTypes.find((item) => item.id === batch.beerTypeId); return `<button class="history-row" data-open-batch="${batch.id}"><span class="tank-number">${batch.fermenterNumber}</span><span><strong>${escapeHtml(beer.name)} · ${batch.volumeTons} t</strong><small>#${batch.batchNumber} · ${formatDate(batch.brewDate)} · ${batch.measurements.length} mērījumi</small></span>${icon("ChevronRight")}</button>`; }).join("") : `<div class="empty-state">${icon("History", 38)}<h2>Vēsture vēl ir tukša</h2><p>Pabeigtās partijas būs redzamas šeit.</p></div>`}</section></main>`, "Vēsture");
+  const deleted = state.deletedBatches || [];
+  shell(`<main><section class="page-heading"><div><p class="eyebrow">Pabeigtās partijas</p><h1>Vēsture</h1></div></section><section class="history-list">${finished.length ? finished.map((batch) => { const beer = state.beerTypes.find((item) => item.id === batch.beerTypeId); return `<button class="history-row" data-open-batch="${batch.id}"><span class="tank-number">${batch.fermenterNumber}</span><span><strong>${escapeHtml(beer.name)} · ${batch.volumeTons} t</strong><small>#${escapeHtml(batch.batchNumber)} · ${formatDate(batch.brewDate)} · ${batch.measurements.length} mērījumi</small></span>${icon("ChevronRight")}</button>`; }).join("") : `<div class="empty-state">${icon("History", 38)}<h2>Vēsture vēl ir tukša</h2><p>Pabeigtās partijas būs redzamas šeit.</p></div>`}</section><section class="panel trash-panel"><div class="panel-title"><div><p class="eyebrow">Atjaunošana</p><h2>Miskaste</h2></div><span>${deleted.length} partijas</span></div>${deleted.length ? `<div class="history-list">${deleted.map((batch) => `<div class="history-row trash-row"><span class="tank-number">${icon("Trash2",18)}</span><span><strong>${escapeHtml(batch.beerName)} · #${escapeHtml(batch.batchNumber)}</strong><small>${formatDate(batch.brewDate)} · ${escapeHtml(batch.deleteReason || "Iemesls nav norādīts")} · ${escapeHtml(batch.deletedByName || "Operators")}</small></span><button class="secondary" data-restore-batch="${batch.id}">${icon("Undo2",16)} Atjaunot</button></div>`).join("")}</div>` : `<div class="empty-state compact"><p>Dzēstu partiju nav.</p></div>`}</section></main>`, "Vēsture");
+}
+
+async function restoreBatch(batchId) {
+  if (!navigator.onLine) { alert("Partiju var atjaunot, kad ir interneta savienojums."); return; }
+  const deleted = (state.deletedBatches || []).find((item) => item.id === batchId);
+  if (!deleted) return;
+  const event = { id: crypto.randomUUID(), createdAt: new Date().toISOString(), entity: "batch", operation: "restore", entityId: batchId, expectedVersion: deleted.version, reason: "Partija atjaunota no miskastes", operatorId: state.activeOperatorId };
+  try {
+    await syncEvent(state, event, brewery.id, operatorSessionToken());
+    await refreshRemoteState();
+    render();
+  } catch (error) {
+    if (/VERSION_CONFLICT/i.test(error.message || "")) {
+      await reloadRemotePreservingQueue(operatorSessionToken());
+      render();
+    }
+    alert(`Partiju neizdevās atjaunot: ${friendlySyncError(error)}`);
+  }
 }
 
 function settingsPage() {
@@ -753,6 +886,8 @@ document.addEventListener("click", async (event) => {
   if (finishPackagingButton) { finishPackagingDialog(finishPackagingButton.dataset.finishPackaging); return; }
   const deleteBatchButton = event.target.closest("[data-delete-batch]");
   if (deleteBatchButton) { deleteBatchDialog(deleteBatchButton.dataset.deleteBatch); return; }
+  const restoreBatchButton = event.target.closest("[data-restore-batch]");
+  if (restoreBatchButton) { await restoreBatch(restoreBatchButton.dataset.restoreBatch); return; }
   if (event.target.closest("[data-reset-brewing-data]")) { resetBrewingDataDialog(); return; }
   if (event.target.closest("[data-show-daily-tasks]")) { showDailyTasks(); return; }
   if (event.target.closest("[data-enable-notifications]")) { enableNotifications(); return; }

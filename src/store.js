@@ -12,6 +12,7 @@ const defaultState = {
   beerTypes: [],
   fermenters: [],
   batches: [],
+  deletedBatches: [],
   pendingSync: [],
   breweryDataVersion: null,
 };

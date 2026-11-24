@@ -33,12 +33,19 @@ export default async () => {
   for (const subscription of subscriptions || []) {
     const { data: batches, error: batchError } = await supabase
       .from("batches")
-      .select("id, status, beer_type_id, brew_date, batch_number, volume_tons, spund_gravity, has_dry_hop, dry_hop_gravity, cooling_gravity, beer_types(name), fermenters(number), measurements(measured_at,gravity), process_actions(action_type,performed_at), packaging_runs(status,volume_tons)")
-      .eq("brewery_id", subscription.brewery_id);
+      .select("id, status, beer_type_id, brew_date, batch_number, volume_tons, spund_gravity, has_dry_hop, dry_hop_gravity, cooling_gravity, beer_types(name), fermenters(number), measurements(measured_at,gravity,deleted_at), process_actions(action_type,performed_at,deleted_at), packaging_runs(status,volume_tons,deleted_at)")
+      .eq("brewery_id", subscription.brewery_id)
+      .is("deleted_at", null);
     if (batchError) throw batchError;
 
-    const activeBatches = (batches || []).filter((batch) => batch.status !== "finished");
-    const finishedBatches = (batches || []).filter((batch) => batch.status === "finished");
+    const visibleBatches = (batches || []).map((batch) => ({
+      ...batch,
+      measurements: (batch.measurements || []).filter((item) => !item.deleted_at),
+      process_actions: (batch.process_actions || []).filter((item) => !item.deleted_at),
+      packaging_runs: (batch.packaging_runs || []).filter((item) => !item.deleted_at),
+    }));
+    const activeBatches = visibleBatches.filter((batch) => batch.status !== "finished");
+    const finishedBatches = visibleBatches.filter((batch) => batch.status === "finished");
     const tasks = activeBatches.flatMap((batch) => {
       const labels = collectDueTasks(batch, dateKey);
       const predicted = collectPredictedTasks(batch, finishedBatches, dateKey)

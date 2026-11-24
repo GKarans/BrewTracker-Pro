@@ -5,7 +5,7 @@ function throwOnError(result) {
   return result.data;
 }
 
-export async function fetchRemoteState(localState, breweryId) {
+export async function fetchRemoteState(localState, breweryId, sessionToken = null) {
   const [fermenters, beerTypes, batches, measurements, actions, packagingRuns] = await Promise.all([
     supabase.from("fermenters").select("*").order("number"),
     supabase.from("beer_types").select("*").order("name"),
@@ -15,11 +15,20 @@ export async function fetchRemoteState(localState, breweryId) {
     supabase.from("packaging_runs").select("*").order("filtered_at"),
   ]);
   [fermenters, beerTypes, batches, measurements, actions, packagingRuns].forEach(throwOnError);
+  let deletedBatches = localState.deletedBatches || [];
+  if (sessionToken) {
+    const deleted = await supabase.rpc("list_deleted_batches", { session_token: sessionToken });
+    deletedBatches = throwOnError(deleted) || [];
+  }
+  const activeBatchRows = batches.data.filter((item) => !item.deleted_at);
+  const activeMeasurements = measurements.data.filter((item) => !item.deleted_at);
+  const activeActions = actions.data.filter((item) => !item.deleted_at);
+  const activePackagingRuns = packagingRuns.data.filter((item) => !item.deleted_at);
   return {
     ...localState,
     fermenters: fermenters.data,
-    beerTypes: beerTypes.data.map((item) => ({ id: item.id, name: item.name, ogTarget: item.og_target, fgTarget: item.fg_target, spundGravity: item.spund_gravity, hasDryHop: item.has_dry_hop, dryHopGravity: item.dry_hop_gravity, coolingGravity: item.cooling_gravity, co2Target: Number(item.co2_target) })),
-    batches: batches.data.map((batch) => ({
+    beerTypes: beerTypes.data.map((item) => ({ id: item.id, version: item.version || 1, name: item.name, ogTarget: item.og_target, fgTarget: item.fg_target, spundGravity: item.spund_gravity, hasDryHop: item.has_dry_hop, dryHopGravity: item.dry_hop_gravity, coolingGravity: item.cooling_gravity, co2Target: Number(item.co2_target) })),
+    batches: activeBatchRows.map((batch) => ({
       id: batch.id,
       batchNumber: batch.batch_number,
       year: batch.brew_year,
@@ -40,10 +49,12 @@ export async function fetchRemoteState(localState, breweryId) {
       createdBy: batch.created_by,
       createdAt: batch.created_at,
       finishedAt: batch.finished_at,
-      measurements: measurements.data.filter((item) => item.batch_id === batch.id).map((item) => { const linkedAction = actions.data.find((action) => action.id === item.process_action_id); return { id: item.id, measuredAt: item.measured_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), note: item.note || "", operatorId: item.operator_id, processActionId: item.process_action_id, actionType: linkedAction?.action_type || null }; }),
-      actions: actions.data.filter((item) => item.batch_id === batch.id).map((item) => ({ id: item.id, type: item.action_type, performedAt: item.performed_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), note: item.note || "", operatorId: item.operator_id })),
-      packagingRuns: packagingRuns.data.filter((item) => item.batch_id === batch.id).map((item) => ({ id: item.id, clientId: item.client_id, runNumber: item.run_number, volumeTons: Number(item.volume_tons), centrifugeLiters: item.centrifuge_liters == null ? null : Number(item.centrifuge_liters), status: item.status, filteredAt: item.filtered_at, packagedAt: item.packaged_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), co2Vol: item.co2_vol == null ? null : Number(item.co2_vol), operatorId: item.operator_id })),
+      version: batch.version || 1,
+      measurements: activeMeasurements.filter((item) => item.batch_id === batch.id).map((item) => { const linkedAction = activeActions.find((action) => action.id === item.process_action_id); return { id: item.id, version: item.version || 1, measuredAt: item.measured_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), note: item.note || "", operatorId: item.operator_id, processActionId: item.process_action_id, actionType: linkedAction?.action_type || null }; }),
+      actions: activeActions.filter((item) => item.batch_id === batch.id).map((item) => ({ id: item.id, version: item.version || 1, type: item.action_type, performedAt: item.performed_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), note: item.note || "", operatorId: item.operator_id })),
+      packagingRuns: activePackagingRuns.filter((item) => item.batch_id === batch.id).map((item) => ({ id: item.id, version: item.version || 1, clientId: item.client_id, runNumber: item.run_number, volumeTons: Number(item.volume_tons), centrifugeLiters: item.centrifuge_liters == null ? null : Number(item.centrifuge_liters), status: item.status, filteredAt: item.filtered_at, packagedAt: item.packaged_at, gravity: item.gravity, ph: Number(item.ph), temperature: Number(item.temperature_c), pressure: item.pressure_bar == null ? null : Number(item.pressure_bar), co2Vol: item.co2_vol == null ? null : Number(item.co2_vol), operatorId: item.operator_id })),
     })),
+    deletedBatches: deletedBatches.map((item) => ({ id: item.id, batchNumber: item.batch_number, brewDate: item.brew_date, beerName: item.beer_name, version: item.version, deletedAt: item.deleted_at, deleteReason: item.delete_reason, deletedByName: item.deleted_by_name })),
     pendingSync: [],
     breweryId,
   };
@@ -53,7 +64,35 @@ export async function syncEvent(state, event, breweryId, sessionToken) {
   if (!navigator.onLine) return false;
   if (!sessionToken || !event.operatorId) throw new Error("Operatora sesija nav pieejama sinhronizācijai.");
   let payload;
-  if (event.entity === "batch" && event.operation === "delete") {
+  if (["processBundle", "packagingCompletion"].includes(event.entity)) {
+    const batch = state.batches.find((item) => item.id === event.batchId);
+    const action = batch?.actions.find((item) => item.id === event.actionId);
+    const measurement = batch?.measurements.find((item) => item.id === event.measurementId);
+    const packagingRun = batch?.packagingRuns?.find((item) => item.id === event.packagingRunId);
+    const beer = state.beerTypes.find((item) => item.id === batch?.beerTypeId);
+    const fermenter = state.fermenters.find((item) => item.number === batch?.fermenterNumber);
+    if (!batch || !action || !beer || !fermenter) throw new Error("Saistītās darbības dati nav pieejami sinhronizācijai.");
+    payload = {
+      action: {
+        operation: (event.expectedVersions?.action ?? 0) === 0 ? "create" : "update",
+        expected_version: event.expectedVersions?.action ?? 0,
+        item: { id: action.id, client_id: action.id, batch_id: batch.id, action_type: action.type, performed_at: action.performedAt, gravity: action.gravity, ph: action.ph, temperature_c: action.temperature, pressure_bar: action.pressure, note: action.note || null },
+      },
+      batch: {
+        expected_version: event.expectedVersions?.batch ?? 0,
+        beer_expected_version: event.expectedVersions?.beer ?? 0,
+        beer: { id: beer.id, expected_version: event.expectedVersions?.beer ?? 0, name: beer.name, og_target: beer.ogTarget, fg_target: beer.fgTarget, spund_gravity: beer.spundGravity, has_dry_hop: beer.hasDryHop, dry_hop_gravity: beer.dryHopGravity, cooling_gravity: beer.coolingGravity, co2_target: beer.co2Target },
+        item: { id: batch.id, beer_type_id: beer.id, fermenter_id: fermenter.id, batch_number: batch.batchNumber, brew_year: batch.year, sequence_number: batch.sequence, volume_tons: batch.volumeTons, brew_date: batch.brewDate, status: batch.status, og_target: batch.ogTarget, fg_target: batch.fgTarget, spund_gravity: batch.spundGravity, has_dry_hop: batch.hasDryHop, dry_hop_gravity: batch.dryHopGravity, cooling_gravity: batch.coolingGravity, co2_target: batch.co2Target, finished_at: batch.finishedAt || null },
+      },
+    };
+    if (event.entity === "processBundle") {
+      if (!measurement) throw new Error("Darbības mērījums nav pieejams sinhronizācijai.");
+      payload.measurement = { expected_version: event.expectedVersions?.measurement ?? 0, item: { id: measurement.id, client_id: measurement.id, batch_id: batch.id, measured_at: measurement.measuredAt, gravity: measurement.gravity, ph: measurement.ph, temperature_c: measurement.temperature, pressure_bar: measurement.pressure, note: measurement.note || null, process_action_id: action.id, action_type: action.type } };
+    } else {
+      if (!packagingRun) throw new Error("Pildīšanas cikls nav pieejams sinhronizācijai.");
+      payload.packaging = { expected_version: event.expectedVersions?.packagingRun ?? 0, item: { id: packagingRun.id, client_id: packagingRun.clientId || packagingRun.id, batch_id: batch.id, run_number: packagingRun.runNumber, volume_tons: packagingRun.volumeTons, centrifuge_liters: packagingRun.centrifugeLiters, status: packagingRun.status, filtered_at: packagingRun.filteredAt, packaged_at: packagingRun.packagedAt, gravity: packagingRun.gravity, ph: packagingRun.ph, temperature_c: packagingRun.temperature, pressure_bar: packagingRun.pressure, co2_vol: packagingRun.co2Vol } };
+    }
+  } else if (event.entity === "batch" && ["delete", "restore"].includes(event.operation)) {
     payload = { entity_id: event.entityId };
   } else if (event.entity === "batch") {
     const batch = state.batches.find((item) => item.id === event.entityId);
@@ -62,7 +101,7 @@ export async function syncEvent(state, event, breweryId, sessionToken) {
     const fermenter = state.fermenters.find((item) => item.number === batch.fermenterNumber);
     if (!fermenter) throw new Error("Tvertnes dati nav ielādēti no Supabase.");
     payload = {
-      beer: { id: beer.id, name: beer.name, og_target: beer.ogTarget, fg_target: beer.fgTarget, spund_gravity: beer.spundGravity, has_dry_hop: beer.hasDryHop, dry_hop_gravity: beer.dryHopGravity, cooling_gravity: beer.coolingGravity, co2_target: beer.co2Target },
+      beer: { id: beer.id, expected_version: event.beerExpectedVersion ?? beer.version ?? 0, name: beer.name, og_target: beer.ogTarget, fg_target: beer.fgTarget, spund_gravity: beer.spundGravity, has_dry_hop: beer.hasDryHop, dry_hop_gravity: beer.dryHopGravity, cooling_gravity: beer.coolingGravity, co2_target: beer.co2Target },
       batch: { id: batch.id, beer_type_id: beer.id, fermenter_id: fermenter.id, batch_number: batch.batchNumber, brew_year: batch.year, sequence_number: batch.sequence, volume_tons: batch.volumeTons, brew_date: batch.brewDate, status: batch.status, og_target: batch.ogTarget, fg_target: batch.fgTarget, spund_gravity: batch.spundGravity, has_dry_hop: batch.hasDryHop, dry_hop_gravity: batch.dryHopGravity, cooling_gravity: batch.coolingGravity, co2_target: batch.co2Target, finished_at: batch.finishedAt || null },
     };
   } else {
@@ -81,12 +120,14 @@ export async function syncEvent(state, event, breweryId, sessionToken) {
       throw new Error("Neatbalstīts sinhronizācijas ieraksts.");
     }
   }
-  throwOnError(await supabase.rpc("sync_operator_event", {
+  throwOnError(await supabase.rpc("sync_operator_event_v2", {
     session_token: sessionToken,
     expected_operator_id: event.operatorId,
     entity_type: event.entity,
     operation_type: event.operation,
     payload,
+    expected_version: event.expectedVersion ?? event.expectedVersions?.batch ?? 0,
+    change_reason: event.reason || null,
   }));
   return true;
 }
