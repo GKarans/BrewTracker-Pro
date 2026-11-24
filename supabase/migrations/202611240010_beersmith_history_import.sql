@@ -91,7 +91,7 @@ declare
   packaging jsonb;
   vessel public.fermenters;
   beer_id uuid;
-  batch_id uuid;
+  imported_batch_id uuid;
   batch_code text;
   finish_at timestamptz;
   imported_count integer := 0;
@@ -147,12 +147,12 @@ begin
       coalesce((item->>'hasDryHop')::boolean,false),case when coalesce((item->>'hasDryHop')::boolean,false) then nullif(item->>'dryHopGravity','')::smallint else null end,
       (item->>'coolingGravity')::smallint,coalesce(nullif(item->>'co2Target','')::numeric,2.4),op,
       finish_at,finish_at,true,coalesce((item->'source'->>'completionInference')::boolean,false),item->'source'->>'rawNotes'
-    ) returning id into batch_id;
+    ) returning id into imported_batch_id;
 
     for measurement in select value from jsonb_array_elements(coalesce(item->'measurements','[]'::jsonb)) loop
       if nullif(measurement->>'gravity','') is not null then
         insert into public.measurements(batch_id,operator_id,measured_at,gravity,ph,temperature_c,pressure_bar,co2_vol,note,client_id)
-        values(batch_id,op,(measurement->>'measuredAt')::timestamptz,(measurement->>'gravity')::smallint,
+        values(imported_batch_id,op,(measurement->>'measuredAt')::timestamptz,(measurement->>'gravity')::smallint,
           nullif(measurement->>'ph','')::numeric,nullif(measurement->>'temperature','')::numeric,
           nullif(measurement->>'pressure','')::numeric,nullif(measurement->>'co2Vol','')::numeric,
           nullif(measurement->>'note',''),gen_random_uuid());
@@ -160,14 +160,14 @@ begin
     end loop;
     for action in select value from jsonb_array_elements(coalesce(item->'actions','[]'::jsonb)) loop
       insert into public.process_actions(batch_id,operator_id,action_type,performed_at,gravity,ph,temperature_c,pressure_bar,note,client_id)
-      values(batch_id,op,(action->>'type')::public.process_action_type,(action->>'performedAt')::timestamptz,
+      values(imported_batch_id,op,(action->>'type')::public.process_action_type,(action->>'performedAt')::timestamptz,
         nullif(action->>'gravity','')::smallint,nullif(action->>'ph','')::numeric,nullif(action->>'temperature','')::numeric,
         nullif(action->>'pressure','')::numeric,nullif(action->>'note',''),gen_random_uuid())
       on conflict (batch_id,action_type) do nothing;
     end loop;
     for packaging in select value from jsonb_array_elements(coalesce(item->'packagingRuns','[]'::jsonb)) loop
       insert into public.packaging_runs(batch_id,run_number,volume_tons,status,filtered_at,packaged_at,gravity,ph,temperature_c,pressure_bar,co2_vol,operator_id,client_id)
-      values(batch_id,(packaging->>'runNumber')::smallint,(packaging->>'volumeTons')::numeric,'packaged',
+      values(imported_batch_id,(packaging->>'runNumber')::smallint,(packaging->>'volumeTons')::numeric,'packaged',
         (packaging->>'packagedAt')::timestamptz,(packaging->>'packagedAt')::timestamptz,
         nullif(packaging->>'gravity','')::smallint,nullif(packaging->>'ph','')::numeric,nullif(packaging->>'temperature','')::numeric,
         nullif(packaging->>'pressure','')::numeric,nullif(packaging->>'co2Vol','')::numeric,op,gen_random_uuid());
